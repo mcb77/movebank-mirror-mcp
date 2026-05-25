@@ -467,27 +467,198 @@ public class MovebankTools {
     }
 
     @Tool(description = """
-            Run a bounded aggregation over events and return scalars or a
-            small table: counts, means, percentiles, bounding boxes.
-            Refuses queries that would return more than ~1000 rows.
-            Use for 'what's the mean speed of tag X in spring 2024' type
-            questions without producing a file.""")
-    public Map<String, Object> query_events(
+            Run one or more aggregations over an event-data query and
+            return only the resulting scalars/bbox — never raw rows.
+            One streaming pass, no row limit.
+
+            Supported aggregation strings:
+
+              count             → total row count (long)
+              bbox              → {min_lat, max_lat, min_long, max_long}
+                                  from location_lat / location_long;
+                                  null if the sensor type has no location
+              min:<column>      → numeric minimum of <column>
+              max:<column>      → numeric maximum of <column>
+              mean:<column>     → arithmetic mean of <column>
+
+            Multiple aggregations share a single pass over the data.
+            Example: ["count", "bbox", "mean:ground_speed",
+            "max:ground_speed"] runs in one HTTP call.""")
+    public Object query_events(
             @ToolParam(description = "Numeric Movebank study id.")
             long study_id,
             @ToolParam(required = false, description = "Restrict to one tag id.")
             Long tag_id,
-            @ToolParam(required = false, description = "Restrict to one sensor type id.")
+            @ToolParam(required = false, description = "Restrict to one sensor type id (see list_sensor_types).")
             Long sensor_type_id,
-            @ToolParam(required = false, description = "ISO-8601 time window.")
+            @ToolParam(required = false, description = "ISO-8601 time window 'from/to'.")
             String time_window,
-            @ToolParam(description = "Aggregation spec, e.g. 'count', 'mean:ground_speed', 'bbox', 'percentiles:ground_speed'.")
-            String aggregation
+            @ToolParam(description = "Aggregations to compute in one pass. See the tool description for syntax.")
+            List<String> aggregations
     ) {
-        return Map.of("stub", true,
-                      "message", "query_events — implementation pending",
-                      "study_id", study_id,
-                      "aggregation", aggregation);
+        if (aggregations == null || aggregations.isEmpty()) {
+            return Map.of("error", "at least one aggregation is required",
+                          "valid_ops", List.of("count", "bbox", "min:<column>",
+                                               "max:<column>", "mean:<column>"));
+        }
+
+        // Parse the requested aggregations; bail fast on syntax errors so
+        // the LLM gets a clear hint rather than a partial result.
+        List<AggSpec> specs = new ArrayList<>();
+        for (String s : aggregations) {
+            AggSpec spec = parseAggSpec(s);
+            if (spec == null) {
+                return Map.of(
+                        "error", "unknown aggregation '" + s + "'",
+                        "valid_ops", List.of("count", "bbox", "min:<column>",
+                                             "max:<column>", "mean:<column>")
+                );
+            }
+            specs.add(spec);
+        }
+
+        Map<String, String> params = new LinkedHashMap<>();
+        params.put("entity_type", "event");
+        params.put("study_id", String.valueOf(study_id));
+        params.put("attributes", "all");
+        if (sensor_type_id != null) params.put("sensor_type_id", String.valueOf(sensor_type_id));
+        if (tag_id != null)         params.put("tag_id", String.valueOf(tag_id));
+        applyTimeWindow(params, time_window);
+
+        try {
+            Map<String, Object> aggregates =
+                    mirror.directReadStreaming(params, csv -> aggregateStream(csv, specs));
+            Map<String, Object> filters = new LinkedHashMap<>();
+            filters.put("study_id", study_id);
+            filters.put("tag_id", tag_id);
+            filters.put("sensor_type_id", sensor_type_id);
+            filters.put("time_window", time_window);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("filters", filters);
+            result.put("aggregations", aggregates);
+            return result;
+        } catch (Exception e) {
+            return Map.of(
+                    "error", "Could not query events from mirror-api",
+                    "details", e.getMessage()
+            );
+        }
+    }
+
+    /** Parsed aggregation spec. {@code op} is one of count/bbox/min/max/mean;
+     *  {@code column} is the column name for op∈{min,max,mean}, null for the
+     *  others; {@code key} is the original input string used as the result
+     *  key so the LLM sees the same names it asked for. */
+    private record AggSpec(String op, String column, String key) {}
+
+    private static AggSpec parseAggSpec(String s) {
+        if (s == null) return null;
+        String trimmed = s.trim();
+        if (trimmed.equals("count") || trimmed.equals("bbox")) {
+            return new AggSpec(trimmed, null, trimmed);
+        }
+        int colon = trimmed.indexOf(':');
+        if (colon <= 0 || colon == trimmed.length() - 1) return null;
+        String op = trimmed.substring(0, colon).trim();
+        String column = trimmed.substring(colon + 1).trim();
+        if (!(op.equals("min") || op.equals("max") || op.equals("mean"))) return null;
+        if (column.isEmpty()) return null;
+        return new AggSpec(op, column, trimmed);
+    }
+
+    /** One streaming pass over an event-data CSV that maintains
+     *  accumulators per requested aggregation and emits the final
+     *  values keyed by the original input strings. */
+    private Map<String, Object> aggregateStream(Reader csv, List<AggSpec> specs) {
+        try (CSVReader r = new CSVReader(csv)) {
+            String[] header = r.readNext();
+            if (header == null) {
+                // Empty response → all counts/aggregates are zero/null
+                Map<String, Object> empty = new LinkedHashMap<>();
+                for (AggSpec spec : specs) {
+                    empty.put(spec.key(), spec.op().equals("count") ? 0L : null);
+                }
+                return empty;
+            }
+
+            // Column index lookups (one-time)
+            Map<String, Integer> colIdx = new LinkedHashMap<>();
+            for (int i = 0; i < header.length; i++) colIdx.put(header[i], i);
+            int latIdx  = colIdx.getOrDefault("location_lat",  -1);
+            int longIdx = colIdx.getOrDefault("location_long", -1);
+
+            // Accumulators
+            long count = 0;
+            // Per numeric column: [min, max, sum, n]. Shared across
+            // min/max/mean specs that target the same column.
+            Map<String, double[]> stats = new LinkedHashMap<>();
+            for (AggSpec spec : specs) {
+                if (spec.column() != null) {
+                    stats.computeIfAbsent(spec.column(), c -> new double[]{
+                            Double.POSITIVE_INFINITY,
+                            Double.NEGATIVE_INFINITY,
+                            0.0, 0.0
+                    });
+                }
+            }
+            double minLat = Double.POSITIVE_INFINITY, maxLat  = Double.NEGATIVE_INFINITY;
+            double minLong = Double.POSITIVE_INFINITY, maxLong = Double.NEGATIVE_INFINITY;
+            boolean hasGeo = false;
+
+            String[] row;
+            while ((row = r.readNext()) != null) {
+                count++;
+                for (Map.Entry<String, double[]> e : stats.entrySet()) {
+                    int idx = colIdx.getOrDefault(e.getKey(), -1);
+                    if (idx < 0 || idx >= row.length) continue;
+                    Double v = parseDoubleSafe(row[idx]);
+                    if (v == null) continue;
+                    double[] s = e.getValue();
+                    if (v < s[0]) s[0] = v;
+                    if (v > s[1]) s[1] = v;
+                    s[2] += v;
+                    s[3] += 1;
+                }
+                if (latIdx >= 0 && longIdx >= 0
+                        && latIdx < row.length && longIdx < row.length) {
+                    Double lat = parseDoubleSafe(row[latIdx]);
+                    Double lon = parseDoubleSafe(row[longIdx]);
+                    if (lat != null && lon != null) {
+                        hasGeo = true;
+                        if (lat < minLat)  minLat  = lat;
+                        if (lat > maxLat)  maxLat  = lat;
+                        if (lon < minLong) minLong = lon;
+                        if (lon > maxLong) maxLong = lon;
+                    }
+                }
+            }
+
+            // Finalize — emit keyed by the LLM's original input string
+            Map<String, Object> result = new LinkedHashMap<>();
+            for (AggSpec spec : specs) {
+                switch (spec.op()) {
+                    case "count" -> result.put(spec.key(), count);
+                    case "bbox" -> result.put(spec.key(), hasGeo ? Map.of(
+                            "min_lat", minLat, "max_lat", maxLat,
+                            "min_long", minLong, "max_long", maxLong) : null);
+                    case "min" -> {
+                        double[] s = stats.get(spec.column());
+                        result.put(spec.key(), s[3] > 0 ? s[0] : null);
+                    }
+                    case "max" -> {
+                        double[] s = stats.get(spec.column());
+                        result.put(spec.key(), s[3] > 0 ? s[1] : null);
+                    }
+                    case "mean" -> {
+                        double[] s = stats.get(spec.column());
+                        result.put(spec.key(), s[3] > 0 ? s[2] / s[3] : null);
+                    }
+                }
+            }
+            return result;
+        } catch (Exception e) {
+            throw new RuntimeException("Could not aggregate event CSV stream", e);
+        }
     }
 
     @Tool(description = """
