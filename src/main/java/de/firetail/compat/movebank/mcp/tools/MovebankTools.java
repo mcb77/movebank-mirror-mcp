@@ -106,16 +106,63 @@ public class MovebankTools {
     }
 
     @Tool(description = """
-            Full metadata for one study: citation, PIs, license terms, taxa
-            list, temporal/geographic extent, sensor types present,
-            individual + tag counts.""")
+            Full metadata for one study: name, objective, citation, license,
+            PI, taxa, individual/tag/deployment counts, sensor types present,
+            deployment time range, main location, access flags. Call this
+            after list_studies when the user asks about a specific study.""")
     public Map<String, Object> get_study(
             @ToolParam(description = "Numeric Movebank study id (e.g. 2911040).")
             long study_id
     ) {
-        return Map.of("stub", true,
-                      "message", "get_study — implementation pending",
-                      "study_id", study_id);
+        String csv;
+        try {
+            csv = mirror.directRead(Map.of(
+                    "entity_type", "study",
+                    "id", String.valueOf(study_id)
+            ));
+        } catch (RestClientException e) {
+            return Map.of(
+                    "error", "Could not reach movebank-mirror-api at " + mirror.baseUrl() +
+                             " — is it running?",
+                    "details", e.getMessage()
+            );
+        }
+
+        try (CSVReader r = new CSVReader(new StringReader(csv))) {
+            String[] header = r.readNext();
+            String[] row = header == null ? null : r.readNext();
+            if (row == null) {
+                return Map.of("error", "study not found", "study_id", study_id);
+            }
+            Map<String, Object> s = new LinkedHashMap<>();
+            s.put("id", parseLongSafe(col(row, header, "id")));
+            s.put("name", col(row, header, "name"));
+            s.put("study_objective", col(row, header, "study_objective"));
+            s.put("taxon", col(row, header, "taxon_ids"));
+            s.put("sensor_types", col(row, header, "sensor_type_ids"));
+            s.put("n_individuals", parseIntSafe(col(row, header, "number_of_individuals")));
+            s.put("n_tags", parseIntSafe(col(row, header, "number_of_tags")));
+            s.put("n_deployments", parseIntSafe(col(row, header, "number_of_deployments")));
+            s.put("deployment_first", col(row, header, "timestamp_first_deployed_location"));
+            s.put("deployment_last", col(row, header, "timestamp_last_deployed_location"));
+            s.put("main_lat", parseDoubleSafe(col(row, header, "main_location_lat")));
+            s.put("main_long", parseDoubleSafe(col(row, header, "main_location_long")));
+            s.put("pi", col(row, header, "principal_investigator_name"));
+            s.put("contact", col(row, header, "contact_person_name"));
+            s.put("citation", col(row, header, "citation"));
+            s.put("license_type", col(row, header, "license_type"));
+            s.put("license_terms", col(row, header, "license_terms"));
+            s.put("acknowledgements", col(row, header, "acknowledgements"));
+            s.put("grants", col(row, header, "grants_used"));
+            s.put("study_type", col(row, header, "study_type"));
+            s.put("download_access", parseBoolSafe(col(row, header, "i_have_download_access")));
+            return s;
+        } catch (Exception e) {
+            return Map.of(
+                    "error", "Could not parse mirror-api response as CSV",
+                    "details", e.getMessage()
+            );
+        }
     }
 
     @Tool(description = """
@@ -254,6 +301,18 @@ public class MovebankTools {
 
     private static Integer parseIntSafe(String s) {
         try { return Integer.parseInt(s.trim()); } catch (Exception e) { return null; }
+    }
+
+    private static Double parseDoubleSafe(String s) {
+        try { return Double.parseDouble(s.trim()); } catch (Exception e) { return null; }
+    }
+
+    private static Boolean parseBoolSafe(String s) {
+        if (s == null) return null;
+        String t = s.trim().toLowerCase();
+        if (t.equals("true")) return Boolean.TRUE;
+        if (t.equals("false")) return Boolean.FALSE;
+        return null;
     }
 
     /** Render a {@code "YYYY"} or {@code "YYYY–YYYY"} year range from

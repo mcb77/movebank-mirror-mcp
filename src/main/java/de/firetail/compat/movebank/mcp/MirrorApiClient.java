@@ -39,10 +39,16 @@ public class MirrorApiClient {
     public String directRead(Map<String, String> params) {
         UriComponentsBuilder b = UriComponentsBuilder.fromPath("/service/direct-read");
         params.forEach(b::queryParam);
-        return http.get()
+        String body = http.get()
                 .uri(b.build().toUriString())
                 .retrieve()
                 .body(String.class);
+        // Normalize: mirror-api returns HTTP 200 with an empty body for
+        // "no match" (e.g. unknown study id). RestClient turns that into
+        // a null String reference, which would NPE downstream CSV
+        // parsing — collapse to an empty string so callers can assume
+        // non-null and let their "empty response" branches handle it.
+        return body == null ? "" : body;
     }
 
     public String baseUrl() {
