@@ -1,0 +1,24 @@
+spring:
+  main:
+    banner-mode: off
+    web-application-type: none
+
+  ai:
+    mcp:
+      server:
+        name: movebank-mcp
+        version: 0.0.1
+        type: SYNC
+        instructions: |
+          Tools for querying a Movebank mirror through movebank-mirror-api.
+          The mirror is a local cache of Movebank studies; the API server
+          re-serves it through the same REST shape as live Movebank.
+          Use list_studies + get_study to discover what's available; use
+          summarize_events before download_events_to_file to avoid pulling
+          millions of rows into context.
+
+# Where the MCP server reaches movebank-mirror-api. Override with
+# MOVEBANK_MIRROR_API_BASE_URL env var.
+movebank:
+  mirror-api:
+    base-url: http://localhost:8080/movebank

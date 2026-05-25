@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    LOAD-BEARING: this configuration redirects ALL logging to stderr.
+    Reason: when this server runs in stdio MCP mode, stdout is the
+    JSON-RPC channel to the MCP client. Anything Spring Boot or our
+    own code writes to stdout corrupts the wire protocol and the
+    client silently fails to discover tools. Keep stdout clean.
+-->
+<configuration>
+    <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+        <target>System.err</target>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="STDERR"/>
+    </root>
+
+    <logger name="org.springframework" level="WARN"/>
+    <logger name="de.firetail.compat.movebank.mcp" level="INFO"/>
+</configuration>
