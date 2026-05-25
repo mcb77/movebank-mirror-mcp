@@ -241,14 +241,30 @@ public class MovebankTools {
     }
 
     @Tool(description = """
-            Global catalog of Movebank sensor types (id, name, description).
-            Use to translate between sensor type names ('GPS', 'acceleration')
-            and the numeric ids that some endpoints require.""")
-    public List<Map<String, Object>> list_sensor_types() {
-        return List.of(
-                Map.of("stub", true,
-                       "message", "list_sensor_types — implementation pending")
-        );
+            Global catalog of Movebank sensor types (id, external_id, name,
+            is_location_sensor). Use to translate between sensor type
+            names ('GPS', 'acceleration') and the numeric ids that some
+            endpoints require — e.g. summarize_events and query_events
+            take a numeric sensor_type_id, not the human name.""")
+    public Object list_sensor_types() {
+        String csv;
+        try {
+            csv = mirror.directRead(Map.of("entity_type", "tag_type"));
+        } catch (RestClientException e) {
+            return Map.of(
+                    "error", "Could not reach movebank-mirror-api at " + mirror.baseUrl() +
+                             " — is it running?",
+                    "details", e.getMessage()
+            );
+        }
+        try {
+            return parseCsvAsListOfMaps(csv);
+        } catch (Exception e) {
+            return Map.of(
+                    "error", "Could not parse mirror-api response as CSV",
+                    "details", e.getMessage()
+            );
+        }
     }
 
     @Tool(description = """
