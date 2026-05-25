@@ -168,20 +168,76 @@ public class MovebankTools {
     @Tool(description = """
             List entities of a given type within a study.
             Type is one of: individuals, tags, deployments, sensors.
-            Use to enumerate what's in a study at the level of detail
-            the user asks about.""")
-    public List<Map<String, Object>> list_entities(
+            Returns one row per entity with the most useful columns —
+            e.g. individuals get local_identifier + taxon + sex;
+            deployments get tag_id + individual_id + deploy timestamps;
+            tags get manufacturer + model; sensors get tag_id +
+            sensor_type_id.""")
+    public Object list_entities(
             @ToolParam(description = "Numeric Movebank study id.")
             long study_id,
-            @ToolParam(description = "One of: individuals, tags, deployments, sensors.")
+            @ToolParam(description = "One of: individuals, tags, deployments, sensors. " +
+                                     "Singular forms are also accepted.")
             String type
     ) {
-        return List.of(
-                Map.of("stub", true,
-                       "message", "list_entities — implementation pending",
-                       "study_id", study_id,
-                       "type", type)
-        );
+        // Normalize plural → singular for mirror-api's entity_type, and
+        // pick a per-type projection (entity schemas range from 3 columns
+        // for sensor up to 86 for deployment — unprojected is too noisy).
+        String norm = type == null ? "" : type.trim().toLowerCase().replaceAll("s$", "");
+        String entityType;
+        String attrs;
+        switch (norm) {
+            case "individual" -> {
+                entityType = "individual";
+                attrs = "id,local_identifier,taxon_canonical_name,sex,nick_name," +
+                        "ring_id,number_of_deployments,number_of_events,sensor_type_ids";
+            }
+            case "tag" -> {
+                entityType = "tag";
+                attrs = "id,local_identifier,manufacturer_name,model,weight," +
+                        "number_of_deployments,number_of_events,sensor_type_ids";
+            }
+            case "deployment" -> {
+                entityType = "deployment";
+                attrs = "id,tag_id,individual_id,local_identifier," +
+                        "deploy_on_timestamp,deploy_off_timestamp,sensor_type_ids";
+            }
+            case "sensor" -> {
+                entityType = "sensor";
+                attrs = null;  // already minimal (id, tag_id, sensor_type_id)
+            }
+            default -> {
+                return Map.of(
+                        "error", "unknown type '" + type + "'",
+                        "valid_types", List.of("individuals", "tags", "deployments", "sensors")
+                );
+            }
+        }
+
+        Map<String, String> params = new LinkedHashMap<>();
+        params.put("entity_type", entityType);
+        params.put("study_id", String.valueOf(study_id));
+        if (attrs != null) params.put("attributes", attrs);
+
+        String csv;
+        try {
+            csv = mirror.directRead(params);
+        } catch (RestClientException e) {
+            return Map.of(
+                    "error", "Could not reach movebank-mirror-api at " + mirror.baseUrl() +
+                             " — is it running?",
+                    "details", e.getMessage()
+            );
+        }
+
+        try {
+            return parseCsvAsListOfMaps(csv);
+        } catch (Exception e) {
+            return Map.of(
+                    "error", "Could not parse mirror-api response as CSV",
+                    "details", e.getMessage()
+            );
+        }
     }
 
     @Tool(description = """
@@ -327,5 +383,57 @@ public class MovebankTools {
 
     private static String year(String ts) {
         return (ts != null && ts.length() >= 4) ? ts.substring(0, 4) : "";
+    }
+
+    /** Parse a mirror-api CSV response into rows of column→value maps.
+     *  Empty / missing values stay as empty strings; values get
+     *  coerced to numeric / boolean based on the column name
+     *  (see {@link #typedValue}). */
+    private static List<Map<String, Object>> parseCsvAsListOfMaps(String csv) throws Exception {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        try (CSVReader r = new CSVReader(new StringReader(csv))) {
+            String[] header = r.readNext();
+            if (header == null) return rows;
+            String[] row;
+            while ((row = r.readNext()) != null) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                for (int i = 0; i < header.length; i++) {
+                    String v = (i < row.length && row[i] != null) ? row[i] : "";
+                    m.put(header[i], typedValue(header[i], v));
+                }
+                rows.add(m);
+            }
+        }
+        return rows;
+    }
+
+    /** Coerce a raw CSV value to a sensible JSON type based on column
+     *  name conventions. Falls back to the raw String when the cast
+     *  fails or no convention matches. */
+    private static Object typedValue(String name, String value) {
+        if (value == null || value.isEmpty()) return value;
+        // id columns: "id" or "*_id"
+        if (name.equals("id") || name.endsWith("_id")) {
+            Long n = parseLongSafe(value);
+            if (n != null) return n;
+        }
+        // counts: "number_of_*"
+        if (name.startsWith("number_of_")) {
+            Integer n = parseIntSafe(value);
+            if (n != null) return n;
+        }
+        // geo + measurements
+        if (name.equals("weight") || name.contains("latitude") || name.contains("longitude")) {
+            Double n = parseDoubleSafe(value);
+            if (n != null) return n;
+        }
+        // access / state flags
+        if (name.startsWith("i_have_") || name.startsWith("i_can_") ||
+            name.startsWith("i_am_")   || name.startsWith("is_")     ||
+            name.startsWith("has_")    || name.startsWith("there_are_")) {
+            Boolean b = parseBoolSafe(value);
+            if (b != null) return b;
+        }
+        return value;
     }
 }
