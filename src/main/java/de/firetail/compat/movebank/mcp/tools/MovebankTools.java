@@ -1,9 +1,15 @@
 package de.firetail.compat.movebank.mcp.tools;
 
+import com.opencsv.CSVReader;
+import de.firetail.compat.movebank.mcp.MirrorApiClient;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClientException;
 
+import java.io.StringReader;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -27,24 +33,76 @@ import java.util.Map;
 @Service
 public class MovebankTools {
 
+    private final MirrorApiClient mirror;
+
+    public MovebankTools(MirrorApiClient mirror) {
+        this.mirror = mirror;
+    }
+
     // ── Metadata / discovery ──────────────────────────────────────────────
 
     @Tool(description = """
             List studies present in the mirror. Returns compact one-line
-            summaries (id, name, n_individuals, taxon, year range).
+            summaries (id, name, taxon, n_individuals, year range, PI).
             Use this first to discover what's available before
             calling get_study or summarize_events.""")
-    public List<Map<String, Object>> list_studies(
+    public Object list_studies(
             @ToolParam(required = false,
-                       description = "Free-text filter applied to study name / taxon / PI. " +
-                                     "Omit to list all mirrored studies.")
+                       description = "Free-text, case-insensitive filter applied to " +
+                                     "study name / taxon / PI. Omit to list all mirrored studies.")
             String filter
     ) {
-        return List.of(
-                Map.of("stub", true,
-                       "message", "list_studies — implementation pending",
-                       "filter", filter == null ? "(none)" : filter)
-        );
+        String csv;
+        try {
+            csv = mirror.directRead(Map.of(
+                    "entity_type", "study",
+                    "attributes",
+                    "id,name,taxon_ids,number_of_individuals," +
+                    "timestamp_first_deployed_location,timestamp_last_deployed_location," +
+                    "principal_investigator_name,sensor_type_ids"
+            ));
+        } catch (RestClientException e) {
+            return Map.of(
+                    "error", "Could not reach movebank-mirror-api at " + mirror.baseUrl() +
+                             " — is it running?",
+                    "details", e.getMessage()
+            );
+        }
+
+        List<Map<String, Object>> studies = new ArrayList<>();
+        String f = (filter == null || filter.isBlank()) ? null : filter.toLowerCase();
+        try (CSVReader r = new CSVReader(new StringReader(csv))) {
+            String[] header = r.readNext();
+            if (header == null) return studies;
+            String[] row;
+            while ((row = r.readNext()) != null) {
+                String name = col(row, header, "name");
+                String taxon = col(row, header, "taxon_ids");
+                String pi = col(row, header, "principal_investigator_name");
+                if (f != null && !(name.toLowerCase().contains(f) ||
+                                   taxon.toLowerCase().contains(f) ||
+                                   pi.toLowerCase().contains(f))) {
+                    continue;
+                }
+                Map<String, Object> s = new LinkedHashMap<>();
+                s.put("id", parseLongSafe(col(row, header, "id")));
+                s.put("name", name);
+                s.put("taxon", taxon);
+                s.put("n_individuals", parseIntSafe(col(row, header, "number_of_individuals")));
+                s.put("deployment_year_range", yearRange(
+                        col(row, header, "timestamp_first_deployed_location"),
+                        col(row, header, "timestamp_last_deployed_location")));
+                s.put("sensor_types", col(row, header, "sensor_type_ids"));
+                s.put("pi", pi);
+                studies.add(s);
+            }
+        } catch (Exception e) {
+            return Map.of(
+                    "error", "Could not parse mirror-api response as CSV",
+                    "details", e.getMessage()
+            );
+        }
+        return studies;
     }
 
     @Tool(description = """
@@ -174,5 +232,41 @@ public class MovebankTools {
                       "message", "download_events_to_file — implementation pending",
                       "study_id", study_id,
                       "path", path);
+    }
+
+    // ── helpers ───────────────────────────────────────────────────────────
+
+    /** Look up a column by header name, returning "" when the header
+     *  or value is missing. CSV from mirror-api always uses our
+     *  requested attribute order, but defensive lookup is cheap. */
+    private static String col(String[] row, String[] header, String name) {
+        for (int i = 0; i < header.length; i++) {
+            if (header[i].equals(name)) {
+                return i < row.length && row[i] != null ? row[i] : "";
+            }
+        }
+        return "";
+    }
+
+    private static Long parseLongSafe(String s) {
+        try { return Long.parseLong(s.trim()); } catch (Exception e) { return null; }
+    }
+
+    private static Integer parseIntSafe(String s) {
+        try { return Integer.parseInt(s.trim()); } catch (Exception e) { return null; }
+    }
+
+    /** Render a {@code "YYYY"} or {@code "YYYY–YYYY"} year range from
+     *  two timestamps; null if both blank. */
+    private static String yearRange(String first, String last) {
+        String fy = year(first), ly = year(last);
+        if (fy.isEmpty() && ly.isEmpty()) return null;
+        if (fy.equals(ly) || ly.isEmpty()) return fy;
+        if (fy.isEmpty()) return ly;
+        return fy + "–" + ly;   // en-dash
+    }
+
+    private static String year(String ts) {
+        return (ts != null && ts.length() >= 4) ? ts.substring(0, 4) : "";
     }
 }

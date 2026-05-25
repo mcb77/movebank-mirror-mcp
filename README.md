@@ -99,9 +99,22 @@ under `build/distributions/`.
 
 ## Testing the server during development
 
-Use [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
-for the inner dev loop — gives you a web UI to call each tool with
-arbitrary parameters and see the raw responses:
+Two paths, increasing integration:
+
+**1. `scripts/mcp-call.sh` — fastest inner loop.** Spawns a fresh
+server, does the MCP handshake, calls one tool, prints the result.
+Each call is ~3 seconds.
+
+```bash
+./gradlew installDist
+./scripts/mcp-call.sh list_studies
+./scripts/mcp-call.sh list_studies '{"filter":"albatross"}'
+./scripts/mcp-call.sh get_study   '{"study_id":2911040}'
+```
+
+**2. [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
+— browser UI for click-around testing.** Useful for exploring tool
+schemas visually, less useful for repeated calls.
 
 ```bash
 npx @modelcontextprotocol/inspector ./build/install/movebank-mcp/bin/movebank-mcp
