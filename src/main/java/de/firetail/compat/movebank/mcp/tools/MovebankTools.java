@@ -268,18 +268,41 @@ public class MovebankTools {
     }
 
     @Tool(description = """
-            Fuzzy free-text search over study names, taxa, principal
-            investigators, and locations. Use when the user describes
-            studies in natural language and you don't know the study id.""")
-    public List<Map<String, Object>> search(
+            Free-text search over studies in the mirror. Returns the
+            same compact summaries as list_studies, plus a
+            'matched_in' field per hit listing which columns the query
+            matched on (name / taxon / pi). Use when the user
+            describes studies in natural language and you don't know
+            the study id — e.g. "find albatross studies" or "studies
+            by Wikelski". Case-insensitive substring match.""")
+    public Object search(
             @ToolParam(description = "Free-text query, e.g. 'albatross', 'Galapagos seabirds', 'Wikelski'.")
             String query
     ) {
-        return List.of(
-                Map.of("stub", true,
-                       "message", "search — implementation pending",
-                       "query", query)
-        );
+        if (query == null || query.isBlank()) {
+            return Map.of("error", "search query cannot be empty");
+        }
+        // Delegate to list_studies — its filter already does the
+        // case-insensitive substring match across name/taxon/pi. Then
+        // annotate each hit with which columns the query hit on, so
+        // the LLM can explain why each result is in the list.
+        Object result = list_studies(query);
+        if (!(result instanceof List<?> hits)) return result;
+
+        String q = query.toLowerCase();
+        List<Map<String, Object>> annotated = new ArrayList<>();
+        for (Object o : hits) {
+            if (!(o instanceof Map<?, ?> raw)) continue;
+            @SuppressWarnings("unchecked")
+            Map<String, Object> s = new LinkedHashMap<>((Map<String, Object>) raw);
+            List<String> matchedIn = new ArrayList<>();
+            if (s.get("name")  instanceof String n && n.toLowerCase().contains(q)) matchedIn.add("name");
+            if (s.get("taxon") instanceof String t && t.toLowerCase().contains(q)) matchedIn.add("taxon");
+            if (s.get("pi")    instanceof String p && p.toLowerCase().contains(q)) matchedIn.add("pi");
+            s.put("matched_in", matchedIn);
+            annotated.add(s);
+        }
+        return annotated;
     }
 
     // ── Events (summary in context, files on request) ────────────────────
