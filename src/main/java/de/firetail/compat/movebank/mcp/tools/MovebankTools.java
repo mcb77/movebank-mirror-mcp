@@ -7,8 +7,11 @@ import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClientException;
 
+import java.io.Reader;
 import java.io.StringReader;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -308,24 +311,153 @@ public class MovebankTools {
     // ── Events (summary in context, files on request) ────────────────────
 
     @Tool(description = """
-            Summarize event data for a (study, optional tag, optional sensor
-            type, optional time window): row count, columns, temporal
-            extent, geographic bbox, plus first 5 and last 5 rows as a
-            preview. ALWAYS call this before download_events_to_file —
-            it tells you whether the result will be 100 rows or 100 million.""")
-    public Map<String, Object> summarize_events(
+            Summarize event data for a (study, optional tag, optional
+            sensor type, optional time window): row count, column list,
+            temporal extent, geographic bbox, plus first 5 and last 5
+            rows as a preview. ALWAYS call this before
+            download_events_to_file — it tells you whether the result
+            will be 100 rows or 100 million.
+
+            Streams the response in one pass; safe to call on large
+            studies. If you don't know the sensor_type_id, use
+            list_sensor_types first (GPS is 653, acceleration 2365683).""")
+    public Object summarize_events(
             @ToolParam(description = "Numeric Movebank study id.")
             long study_id,
             @ToolParam(required = false, description = "Restrict to one tag id.")
             Long tag_id,
-            @ToolParam(required = false, description = "Restrict to one sensor type id (see list_sensor_types).")
+            @ToolParam(required = false, description = "Restrict to one sensor type id (see list_sensor_types). " +
+                                                       "Omit to summarize across all sensors in the study.")
             Long sensor_type_id,
-            @ToolParam(required = false, description = "ISO-8601 time window, e.g. '2020-01-01/2020-12-31'.")
+            @ToolParam(required = false, description = "ISO-8601 time window 'from/to', e.g. " +
+                                                       "'2020-01-01/2020-12-31'. Omit for no time filter.")
             String time_window
     ) {
-        return Map.of("stub", true,
-                      "message", "summarize_events — implementation pending",
-                      "study_id", study_id);
+        Map<String, String> params = new LinkedHashMap<>();
+        params.put("entity_type", "event");
+        params.put("study_id", String.valueOf(study_id));
+        params.put("attributes", "all");
+        if (sensor_type_id != null) params.put("sensor_type_id", String.valueOf(sensor_type_id));
+        if (tag_id != null)         params.put("tag_id", String.valueOf(tag_id));
+        applyTimeWindow(params, time_window);
+
+        try {
+            Map<String, Object> summary = mirror.directReadStreaming(params, this::summarizeStream);
+            // Echo what was queried so the LLM can re-cite the filters
+            // accurately in its response to the user.
+            Map<String, Object> filters = new LinkedHashMap<>();
+            filters.put("study_id", study_id);
+            filters.put("tag_id", tag_id);
+            filters.put("sensor_type_id", sensor_type_id);
+            filters.put("time_window", time_window);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("filters", filters);
+            result.putAll(summary);
+            return result;
+        } catch (Exception e) {
+            return Map.of(
+                    "error", "Could not summarize events from mirror-api at " + mirror.baseUrl(),
+                    "details", e.getMessage()
+            );
+        }
+    }
+
+    /** One streaming pass: count rows, track first/last timestamp,
+     *  min/max lat+long, capture head (first 5) and tail (last 5)
+     *  without retaining the rows in between. */
+    private Map<String, Object> summarizeStream(Reader csv) {
+        try (CSVReader r = new CSVReader(csv)) {
+            String[] header = r.readNext();
+            if (header == null) {
+                Map<String, Object> empty = new LinkedHashMap<>();
+                empty.put("row_count", 0L);
+                empty.put("columns", List.of());
+                empty.put("head", List.of());
+                empty.put("tail", List.of());
+                return empty;
+            }
+            int tsIdx   = indexOf(header, "timestamp");
+            int latIdx  = indexOf(header, "location_lat");
+            int longIdx = indexOf(header, "location_long");
+
+            long count = 0;
+            String firstTs = null, lastTs = null;
+            Double minLat = null, maxLat = null, minLong = null, maxLong = null;
+            List<Map<String, Object>> head = new ArrayList<>(5);
+            Deque<Map<String, Object>> tail = new ArrayDeque<>(6);
+
+            String[] row;
+            while ((row = r.readNext()) != null) {
+                count++;
+                if (tsIdx >= 0 && tsIdx < row.length) {
+                    String ts = row[tsIdx];
+                    if (ts != null && !ts.isEmpty()) {
+                        if (firstTs == null) firstTs = ts;
+                        lastTs = ts;
+                    }
+                }
+                Double lat = (latIdx  >= 0 && latIdx  < row.length) ? parseDoubleSafe(row[latIdx])  : null;
+                Double lon = (longIdx >= 0 && longIdx < row.length) ? parseDoubleSafe(row[longIdx]) : null;
+                if (lat != null) { if (minLat  == null || lat < minLat)  minLat  = lat;
+                                   if (maxLat  == null || lat > maxLat)  maxLat  = lat; }
+                if (lon != null) { if (minLong == null || lon < minLong) minLong = lon;
+                                   if (maxLong == null || lon > maxLong) maxLong = lon; }
+
+                if (head.size() < 5) head.add(rowToTypedMap(header, row));
+                tail.addLast(rowToTypedMap(header, row));
+                if (tail.size() > 5) tail.pollFirst();
+            }
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("row_count", count);
+            result.put("columns", List.of(header));
+            Map<String, Object> timeExtent = new LinkedHashMap<>();
+            timeExtent.put("first", firstTs);
+            timeExtent.put("last",  lastTs);
+            result.put("time_extent", timeExtent);
+            if (minLat != null && minLong != null) {
+                result.put("bbox", Map.of(
+                        "min_lat", minLat, "max_lat", maxLat,
+                        "min_long", minLong, "max_long", maxLong));
+            } else {
+                result.put("bbox", null);
+            }
+            result.put("head", head);
+            result.put("tail", new ArrayList<>(tail));
+            return result;
+        } catch (Exception e) {
+            throw new RuntimeException("Could not parse event CSV stream", e);
+        }
+    }
+
+    /** Parse a "from/to" ISO-8601 window and stash as Movebank's
+     *  separate timestamp_start / timestamp_end query parameters.
+     *  Skips silently if the input doesn't have a slash. */
+    private static void applyTimeWindow(Map<String, String> params, String timeWindow) {
+        if (timeWindow == null || timeWindow.isBlank()) return;
+        String[] parts = timeWindow.split("/", 2);
+        if (parts.length == 2) {
+            String from = parts[0].trim();
+            String to   = parts[1].trim();
+            if (!from.isEmpty()) params.put("timestamp_start", from);
+            if (!to.isEmpty())   params.put("timestamp_end",   to);
+        }
+    }
+
+    /** Map a CSV row to a column→value map using {@link #typedValue}'s
+     *  coercion. Used by the events head/tail previews. */
+    private static Map<String, Object> rowToTypedMap(String[] header, String[] row) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        for (int i = 0; i < header.length; i++) {
+            String v = (i < row.length && row[i] != null) ? row[i] : "";
+            m.put(header[i], typedValue(header[i], v));
+        }
+        return m;
+    }
+
+    private static int indexOf(String[] arr, String value) {
+        for (int i = 0; i < arr.length; i++) if (arr[i].equals(value)) return i;
+        return -1;
     }
 
     @Tool(description = """
@@ -461,8 +593,13 @@ public class MovebankTools {
             Integer n = parseIntSafe(value);
             if (n != null) return n;
         }
-        // geo + measurements
-        if (name.equals("weight") || name.contains("latitude") || name.contains("longitude")) {
+        // geo + measurements (covers latitude/longitude long forms plus
+        // the abbreviated suffixes used on event rows like
+        // location_lat / location_long / deploy_on_lat etc.)
+        if (name.equals("weight")
+                || name.contains("latitude") || name.contains("longitude")
+                || name.endsWith("_lat")     || name.endsWith("_long")
+                || name.endsWith("_lon")) {
             Double n = parseDoubleSafe(value);
             if (n != null) return n;
         }

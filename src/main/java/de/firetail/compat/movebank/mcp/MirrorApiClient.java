@@ -5,7 +5,12 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.Reader;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.function.Function;
 
 /**
  * Thin HTTP client for the running movebank-mirror-api instance.
@@ -53,5 +58,31 @@ public class MirrorApiClient {
 
     public String baseUrl() {
         return baseUrl;
+    }
+
+    /**
+     * Streaming variant for tools that need to process large event-data
+     * responses without loading the full CSV into a String. The consumer
+     * is invoked with a Reader bound to the HTTP response body; do not
+     * use the Reader after the consumer returns.
+     *
+     * Use for {@code entity_type=event} responses — they can be millions
+     * of rows. Use {@link #directRead} for everything smaller.
+     */
+    public <T> T directReadStreaming(Map<String, String> params,
+                                     Function<Reader, T> consumer) {
+        UriComponentsBuilder b = UriComponentsBuilder.fromPath("/service/direct-read");
+        params.forEach(b::queryParam);
+        return http.get()
+                .uri(b.build().toUriString())
+                .exchange((req, resp) -> {
+                    try (Reader r = new InputStreamReader(
+                            resp.getBody(), StandardCharsets.UTF_8)) {
+                        return consumer.apply(r);
+                    } catch (IOException e) {
+                        throw new RuntimeException(
+                                "Could not read mirror-api response stream", e);
+                    }
+                });
     }
 }
