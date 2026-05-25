@@ -34,8 +34,14 @@ dependencyManagement {
 }
 
 dependencies {
-    // MCP server (stdio transport bundled by default in this starter).
+    // MCP server. Both transports included so a single binary can run
+    // as either a stdio subprocess (default Claude Code registration)
+    // or a long-lived HTTP/SSE daemon. McpServerApplication.main picks
+    // one based on --stdio flag or MOVEBANK_MCP_STDIO env var; default
+    // is HTTP. The unused starter's auto-config is suppressed at
+    // startup.
     implementation 'org.springframework.ai:spring-ai-starter-mcp-server'
+    implementation 'org.springframework.ai:spring-ai-starter-mcp-server-webmvc'
 
     // For HTTP calls to a running movebank-mirror-api.
     implementation 'org.springframework.boot:spring-boot-starter'

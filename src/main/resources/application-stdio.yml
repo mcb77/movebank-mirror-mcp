@@ -1,0 +1,18 @@
+# Profile-specific overrides for stdio mode.
+#
+# Activated by McpServerApplication.main when invoked with --stdio
+# or MOVEBANK_MCP_STDIO=true. Also activatable via
+# --spring.profiles.active=stdio if you bypass the launcher's flag
+# parsing.
+#
+# In stdio mode the JSON-RPC channel IS stdout, so we disable the
+# embedded web server (no Tomcat startup, no port allocation) and
+# flip Spring AI's stdio transport on.
+spring:
+  main:
+    web-application-type: none
+
+  ai:
+    mcp:
+      server:
+        stdio: true

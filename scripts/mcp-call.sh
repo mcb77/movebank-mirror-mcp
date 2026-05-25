@@ -41,7 +41,7 @@ JSON
 # on a fixed sleep — JVM warm-up varies. Reads stdout line-by-line and
 # returns once the id-2 response arrives (or after a hard timeout).
 RESPONSE=$(
-    (echo "$SEQUENCE"; sleep 30) | "$BIN" 2>/dev/null \
+    (echo "$SEQUENCE"; sleep 30) | "$BIN" --stdio 2>/dev/null \
     | while IFS= read -r line; do
           # Only the id=2 response is the tool call's; ignore initialize (id=1)
           # and any notifications (no id).

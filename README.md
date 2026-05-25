@@ -56,9 +56,12 @@ conversation.
 ```
    Claude Code / Claude Desktop / MCP Inspector
                     │
-                    │ JSON-RPC over stdio
+                    │ JSON-RPC over stdio   OR   HTTP/SSE
                     ▼
               movebank-mcp        ◄── this repo
+                    │            ( subprocess per session
+                    │              OR long-lived daemon
+                    │              on 127.0.0.1:8090 )
                     │
                     │ HTTP
                     ▼
@@ -120,17 +123,50 @@ schemas visually, less useful for repeated calls.
 npx @modelcontextprotocol/inspector ./build/install/movebank-mcp/bin/movebank-mcp
 ```
 
-## Registering with Claude Code
+## Run modes
 
-After `./gradlew installDist`:
+The same binary supports two transports — pick whichever fits your
+client.
+
+### HTTP / SSE (default — long-lived daemon)
 
 ```bash
-claude mcp add movebank-mcp -- \
-    /absolute/path/to/movebank-mcp/build/install/movebank-mcp/bin/movebank-mcp
+./build/install/movebank-mcp/bin/movebank-mcp
+# now listening on 127.0.0.1:8090, SSE endpoint at /sse
 ```
 
-Restart your Claude Code session. The 8 tools then appear in Claude's
-tool list as `mcp__movebank-mcp__list_studies`, etc.
+One running server can host many MCP client connections. Restart it
+manually after `./gradlew installDist` to pick up code changes. Bound
+to 127.0.0.1 by default — there's no authentication, so don't expose
+externally without a reverse proxy that adds it.
+
+Register with Claude Code:
+
+```bash
+claude mcp add --transport sse --scope user movebank-mcp http://127.0.0.1:8090/sse
+```
+
+### stdio (subprocess per session)
+
+```bash
+./build/install/movebank-mcp/bin/movebank-mcp --stdio
+# blocks reading JSON-RPC from stdin
+```
+
+Or via env var: `MOVEBANK_MCP_STDIO=true ./bin/movebank-mcp`.
+
+This is the original model — Claude Code spawns the server as a
+subprocess on session start and kills it on `/exit`. Slower dev loop
+(every code change needs a session restart) but no daemon to manage.
+
+Register with Claude Code:
+
+```bash
+claude mcp add --scope user movebank-mcp -- /absolute/path/to/movebank-mcp/build/install/movebank-mcp/bin/movebank-mcp --stdio
+```
+
+In either mode, the 8 tools appear in Claude's tool list as
+`mcp__movebank-mcp__list_studies`, etc.
 
 ---
 

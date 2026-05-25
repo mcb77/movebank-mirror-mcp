@@ -1,7 +1,16 @@
+# Default mode: HTTP / SSE on 127.0.0.1:8090. movebank-mcp runs as
+# a long-lived daemon; multiple MCP clients can connect to the same
+# instance over Spring AI's SSE transport.
+#
+# To run as a stdio subprocess instead (the original Claude-Code-
+# launches-it model), activate the 'stdio' profile via either:
+#   - the --stdio CLI flag (handled in McpServerApplication.main)
+#   - MOVEBANK_MCP_STDIO=true env var (same)
+#   - --spring.profiles.active=stdio
+# See application-stdio.yml for the stdio-mode overrides.
 spring:
   main:
     banner-mode: off
-    web-application-type: none
 
   ai:
     mcp:
@@ -9,6 +18,7 @@ spring:
         name: movebank-mcp
         version: 0.0.1
         type: SYNC
+        stdio: false
         instructions: |
           Tools for querying a Movebank mirror through movebank-mirror-api.
           The mirror is a local cache of Movebank studies; the API server
@@ -16,6 +26,13 @@ spring:
           Use list_studies + get_study to discover what's available; use
           summarize_events before download_events_to_file to avoid pulling
           millions of rows into context.
+
+# HTTP server config (ignored in stdio mode). Bound to 127.0.0.1 by
+# default because the MCP server has no authentication; only expose
+# externally behind a reverse proxy that adds auth.
+server:
+  port: 8090
+  address: 127.0.0.1
 
 # Where the MCP server reaches movebank-mirror-api. Override with
 # MOVEBANK_MIRROR_API_BASE_URL env var.
