@@ -7,8 +7,14 @@ import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClientException;
 
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.IOException;
 import java.io.Reader;
 import java.io.StringReader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -485,27 +491,112 @@ public class MovebankTools {
     }
 
     @Tool(description = """
-            Produce a CSV file of event data on disk; return the path,
-            row count, and column list. The LLM never sees the raw rows —
-            tell the user where the file is and let them analyze it with
-            polars / pandas / R. Default format is CSV; use this when
-            summarize_events tells you the result is too big for context.""")
-    public Map<String, Object> download_events_to_file(
+            Stream event data from the mirror to a CSV file on disk;
+            return the path, row count, column list, and file size.
+            The LLM never sees the raw rows — tell the user where the
+            file is and let them analyze it with polars / pandas / R.
+
+            ALWAYS call summarize_events first to learn how big the
+            result will be — there's no row limit here.
+
+            Bytes are passed through unchanged from mirror-api so the
+            CSV is bit-faithful with what the live Movebank API would
+            return; downstream tools that depend on specific quoting
+            (notably R's read.csv with na.strings) behave identically.""")
+    public Object download_events_to_file(
             @ToolParam(description = "Numeric Movebank study id.")
             long study_id,
             @ToolParam(required = false, description = "Restrict to one tag id.")
             Long tag_id,
-            @ToolParam(required = false, description = "Restrict to one sensor type id.")
+            @ToolParam(required = false, description = "Restrict to one sensor type id (see list_sensor_types).")
             Long sensor_type_id,
-            @ToolParam(required = false, description = "ISO-8601 time window.")
+            @ToolParam(required = false, description = "ISO-8601 time window 'from/to'.")
             String time_window,
-            @ToolParam(description = "Absolute output file path. Suggest something under /tmp/ unless the user has asked for a specific location.")
+            @ToolParam(description = "Absolute output file path. Suggest something under /tmp/ " +
+                                     "unless the user has asked for a specific location. Parent " +
+                                     "directories are created as needed; an existing file is " +
+                                     "overwritten.")
             String path
     ) {
-        return Map.of("stub", true,
-                      "message", "download_events_to_file — implementation pending",
-                      "study_id", study_id,
-                      "path", path);
+        if (path == null || path.isBlank()) {
+            return Map.of("error", "path is required");
+        }
+        Path outPath = Path.of(path).toAbsolutePath();
+
+        Map<String, String> params = new LinkedHashMap<>();
+        params.put("entity_type", "event");
+        params.put("study_id", String.valueOf(study_id));
+        params.put("attributes", "all");
+        if (sensor_type_id != null) params.put("sensor_type_id", String.valueOf(sensor_type_id));
+        if (tag_id != null)         params.put("tag_id", String.valueOf(tag_id));
+        applyTimeWindow(params, time_window);
+
+        try {
+            Map<String, Object> summary =
+                    mirror.directReadStreaming(params, csv -> streamCsvToFile(csv, outPath));
+            Map<String, Object> filters = new LinkedHashMap<>();
+            filters.put("study_id", study_id);
+            filters.put("tag_id", tag_id);
+            filters.put("sensor_type_id", sensor_type_id);
+            filters.put("time_window", time_window);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("filters", filters);
+            result.putAll(summary);
+            return result;
+        } catch (Exception e) {
+            return Map.of(
+                    "error", "Could not download events to " + outPath,
+                    "details", e.getMessage()
+            );
+        }
+    }
+
+    /** Stream a CSV response line-by-line to a local file. Counts data
+     *  rows and parses the header for the column list, but does NOT
+     *  re-encode the CSV — the bytes (modulo newline normalization)
+     *  are passed through unchanged, preserving mirror-api's
+     *  applyQuotesToAll=false quoting that downstream R clients rely on. */
+    private Map<String, Object> streamCsvToFile(Reader csv, Path outPath) {
+        try {
+            Path parent = outPath.getParent();
+            if (parent != null) Files.createDirectories(parent);
+
+            long rowCount = 0;
+            String[] columns = new String[0];
+
+            try (BufferedReader br = new BufferedReader(csv);
+                 BufferedWriter bw = Files.newBufferedWriter(outPath, StandardCharsets.UTF_8)) {
+
+                String headerLine = br.readLine();
+                if (headerLine != null) {
+                    bw.write(headerLine);
+                    bw.newLine();
+                    // Parse the header just to extract column names for the
+                    // response. CSVReader handles quoted commas correctly.
+                    try (CSVReader hr = new CSVReader(new StringReader(headerLine))) {
+                        String[] parsed = hr.readNext();
+                        if (parsed != null) columns = parsed;
+                    }
+                }
+
+                String line;
+                while ((line = br.readLine()) != null) {
+                    bw.write(line);
+                    bw.newLine();
+                    rowCount++;
+                }
+            }
+
+            long size = Files.size(outPath);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("path", outPath.toString());
+            result.put("row_count", rowCount);
+            result.put("columns", List.of(columns));
+            result.put("size_bytes", size);
+            return result;
+        } catch (Exception e) {
+            throw new RuntimeException("Could not write to " + outPath + ": " + e.getMessage(), e);
+        }
     }
 
     // ── helpers ───────────────────────────────────────────────────────────
