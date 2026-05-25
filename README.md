@@ -125,20 +125,48 @@ npx @modelcontextprotocol/inspector ./build/install/movebank-mcp/bin/movebank-mc
 
 ## Run modes
 
-The same binary supports two transports — pick whichever fits your
-client.
+The same binary supports two transports. Pick by use case — both expose
+identical tool surfaces.
 
-### HTTP / SSE (default — long-lived daemon)
+### stdio — subprocess per client session
+
+The standard MCP-client model. Claude Code (or Claude Desktop, or MCP
+Inspector) spawns the server as a subprocess on session start and
+shuts it down when you exit. Nothing to manage; nothing left running.
+
+```bash
+./build/install/movebank-mcp/bin/movebank-mcp --stdio
+# blocks reading JSON-RPC from stdin
+```
+
+`MOVEBANK_MCP_STDIO=true` env var has the same effect.
+
+Register with Claude Code:
+
+```bash
+claude mcp add --scope user movebank-mcp -- /absolute/path/to/movebank-mcp/build/install/movebank-mcp/bin/movebank-mcp --stdio
+```
+
+Trade-off: a code change requires a Claude Code session restart for
+the new binary to be spawned — see [`scripts/mcp-call.sh`](scripts/mcp-call.sh)
+for a faster inner-loop test path that re-spawns per call.
+
+### HTTP / SSE — long-lived daemon
+
+Run movebank-mcp once; many MCP clients connect to it over the SSE
+transport. One process, one JVM warm-up; code changes pick up after a
+single server restart instead of one per client session.
+
+This is what you get if you launch the binary with no flag:
 
 ```bash
 ./build/install/movebank-mcp/bin/movebank-mcp
-# now listening on 127.0.0.1:8090, SSE endpoint at /sse
+# listening on 127.0.0.1:8090, SSE endpoint at /sse
 ```
 
-One running server can host many MCP client connections. Restart it
-manually after `./gradlew installDist` to pick up code changes. Bound
-to 127.0.0.1 by default — there's no authentication, so don't expose
-externally without a reverse proxy that adds it.
+Bound to 127.0.0.1 by default — there's no authentication on the MCP
+surface, so don't expose externally without a reverse proxy that adds
+it.
 
 Register with Claude Code:
 
@@ -146,24 +174,11 @@ Register with Claude Code:
 claude mcp add --transport sse --scope user movebank-mcp http://127.0.0.1:8090/sse
 ```
 
-### stdio (subprocess per session)
-
-```bash
-./build/install/movebank-mcp/bin/movebank-mcp --stdio
-# blocks reading JSON-RPC from stdin
-```
-
-Or via env var: `MOVEBANK_MCP_STDIO=true ./bin/movebank-mcp`.
-
-This is the original model — Claude Code spawns the server as a
-subprocess on session start and kills it on `/exit`. Slower dev loop
-(every code change needs a session restart) but no daemon to manage.
-
-Register with Claude Code:
-
-```bash
-claude mcp add --scope user movebank-mcp -- /absolute/path/to/movebank-mcp/build/install/movebank-mcp/bin/movebank-mcp --stdio
-```
+When to use which: **stdio** for the typical single-user setup (one
+researcher, one Claude Code session); **HTTP/SSE** when you want
+multiple clients to share a single warm server, when iteration on the
+server code is frequent, or when the daemon model fits your
+deployment (e.g. systemd unit, container).
 
 In either mode, the 8 tools appear in Claude's tool list as
 `mcp__movebank-mcp__list_studies`, etc.
