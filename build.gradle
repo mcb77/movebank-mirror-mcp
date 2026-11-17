@@ -10,7 +10,7 @@ version = '0.0.1'
 description = 'MCP server that exposes a local Movebank mirror as LLM-callable tools.'
 
 base {
-    archivesName = 'movebank-mcp'
+    archivesName = 'movebank-mirror-mcp'
 }
 
 java {
@@ -37,7 +37,7 @@ dependencies {
     // MCP server. Both transports included so a single binary can run
     // as either a stdio subprocess (default Claude Code registration)
     // or a long-lived HTTP/SSE daemon. McpServerApplication.main picks
-    // one based on --stdio flag or MOVEBANK_MCP_STDIO env var; default
+    // one based on --stdio flag or MOVEBANK_MIRROR_MCP_STDIO env var; default
     // is HTTP. The unused starter's auto-config is suppressed at
     // startup.
     implementation 'org.springframework.ai:spring-ai-starter-mcp-server'
@@ -58,12 +58,12 @@ dependencies {
 }
 
 application {
-    mainClass = 'de.firetail.compat.movebank.mcp.McpServerApplication'
-    applicationName = 'movebank-mcp'
+    mainClass = 'de.firetail.compat.movebank.mirror.mcp.McpServerApplication'
+    applicationName = 'movebank-mirror-mcp'
 }
 
 springBoot {
-    mainClass = 'de.firetail.compat.movebank.mcp.McpServerApplication'
+    mainClass = 'de.firetail.compat.movebank.mirror.mcp.McpServerApplication'
 }
 
 // Read by a future ManifestVersionProvider for --version. Applied to both

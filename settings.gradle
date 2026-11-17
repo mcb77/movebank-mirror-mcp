@@ -1,4 +1,4 @@
-rootProject.name = 'movebank-mcp'
+rootProject.name = 'movebank-mirror-mcp'
 
 if (hasProperty('localMovebankMirror')) {
     includeBuild('../movebank-mirror') {

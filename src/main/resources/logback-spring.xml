@@ -19,5 +19,5 @@
     </root>
 
     <logger name="org.springframework" level="WARN"/>
-    <logger name="de.firetail.compat.movebank.mcp" level="INFO"/>
+    <logger name="de.firetail.compat.movebank.mirror.mcp" level="INFO"/>
 </configuration>

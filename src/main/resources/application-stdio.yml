@@ -1,7 +1,7 @@
 # Profile-specific overrides for stdio mode.
 #
 # Activated by McpServerApplication.main when invoked with --stdio
-# or MOVEBANK_MCP_STDIO=true. Also activatable via
+# or MOVEBANK_MIRROR_MCP_STDIO=true. Also activatable via
 # --spring.profiles.active=stdio if you bypass the launcher's flag
 # parsing.
 #

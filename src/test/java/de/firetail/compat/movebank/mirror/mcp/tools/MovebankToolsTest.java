@@ -1,7 +1,7 @@
-package de.firetail.compat.movebank.mcp.tools;
+package de.firetail.compat.movebank.mirror.mcp.tools;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import de.firetail.compat.movebank.mcp.MirrorDirectory;
+import de.firetail.compat.movebank.mirror.mcp.MirrorDirectory;
 import de.firetail.compat.movebank.mirror.StudyJson;
 import de.firetail.compat.movebank.mirror.reader.MirrorLayout;
 import org.junit.jupiter.api.BeforeEach;

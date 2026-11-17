@@ -1,4 +1,4 @@
-# movebank-mcp
+# movebank-mirror-mcp
 
 An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server
 that exposes a local Movebank mirror, written by
@@ -57,7 +57,7 @@ conversation.
                     │
                     │ JSON-RPC over stdio   OR   HTTP/SSE
                     ▼
-              movebank-mcp        ◄── this repo
+           movebank-mirror-mcp    ◄── this repo
                     │            ( subprocess per session
                     │              OR long-lived daemon
                     │              on 127.0.0.1:8090 )
@@ -67,7 +67,7 @@ conversation.
             movebank-mirror/      (file/folder structure)
 ```
 
-`movebank-mcp` is a Spring Boot app using
+`movebank-mirror-mcp` is a Spring Boot app using
 [`spring-ai-starter-mcp-server`](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-server-boot-starter-docs.html)
 for the MCP plumbing (JSON-RPC framing, tool registration, schema
 emission). It reads the mirror directory directly with the `reader`
@@ -92,7 +92,7 @@ same bytes the API would send. No server has to be running.
 
 ```bash
 ./gradlew installDist
-./build/install/movebank-mcp/bin/movebank-mcp --help
+./build/install/movebank-mirror-mcp/bin/movebank-mirror-mcp --help
 ```
 
 The dist archive is produced by `./gradlew bootDistTar bootDistZip`
@@ -123,7 +123,7 @@ export MOVEBANK_MIRROR_DIR=/var/lib/mvb
 schemas visually, less useful for repeated calls.
 
 ```bash
-npx @modelcontextprotocol/inspector ./build/install/movebank-mcp/bin/movebank-mcp
+npx @modelcontextprotocol/inspector ./build/install/movebank-mirror-mcp/bin/movebank-mirror-mcp
 ```
 
 ## Run modes
@@ -138,16 +138,16 @@ Inspector) spawns the server as a subprocess on session start and
 shuts it down when you exit. Nothing to manage; nothing left running.
 
 ```bash
-./build/install/movebank-mcp/bin/movebank-mcp --stdio
+./build/install/movebank-mirror-mcp/bin/movebank-mirror-mcp --stdio
 # blocks reading JSON-RPC from stdin
 ```
 
-`MOVEBANK_MCP_STDIO=true` env var has the same effect.
+`MOVEBANK_MIRROR_MCP_STDIO=true` env var has the same effect.
 
 Register with Claude Code:
 
 ```bash
-claude mcp add --scope user -e MOVEBANK_MIRROR_DIR=/var/lib/mvb movebank-mcp -- /absolute/path/to/movebank-mcp/build/install/movebank-mcp/bin/movebank-mcp --stdio
+claude mcp add --scope user -e MOVEBANK_MIRROR_DIR=/var/lib/mvb movebank-mirror-mcp -- /absolute/path/to/movebank-mirror-mcp/build/install/movebank-mirror-mcp/bin/movebank-mirror-mcp --stdio
 ```
 
 Trade-off: a code change requires a Claude Code session restart for
@@ -156,14 +156,14 @@ for a faster inner-loop test path that re-spawns per call.
 
 ### HTTP / SSE — long-lived daemon
 
-Run movebank-mcp once; many MCP clients connect to it over the SSE
+Run movebank-mirror-mcp once; many MCP clients connect to it over the SSE
 transport. One process, one JVM warm-up; code changes pick up after a
 single server restart instead of one per client session.
 
 This is what you get if you launch the binary with no flag:
 
 ```bash
-MOVEBANK_MIRROR_DIR=/var/lib/mvb ./build/install/movebank-mcp/bin/movebank-mcp
+MOVEBANK_MIRROR_DIR=/var/lib/mvb ./build/install/movebank-mirror-mcp/bin/movebank-mirror-mcp
 # listening on 127.0.0.1:8090, SSE endpoint at /sse
 ```
 
@@ -174,7 +174,7 @@ it.
 Register with Claude Code:
 
 ```bash
-claude mcp add --transport sse --scope user movebank-mcp http://127.0.0.1:8090/sse
+claude mcp add --transport sse --scope user movebank-mirror-mcp http://127.0.0.1:8090/sse
 ```
 
 When to use which: **stdio** for the typical single-user setup (one
@@ -184,7 +184,7 @@ server code is frequent, or when the daemon model fits your
 deployment (e.g. systemd unit, container).
 
 In either mode, the 8 tools appear in Claude's tool list as
-`mcp__movebank-mcp__list_studies`, etc.
+`mcp__movebank-mirror-mcp__list_studies`, etc.
 
 ---
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Call a tool on a freshly-spawned movebank-mcp via direct MCP JSON-RPC.
+# Call a tool on a freshly-spawned movebank-mirror-mcp via direct MCP JSON-RPC.
 # Faster than restarting Claude Code for inner-loop dev iteration.
 #
 # Usage:
@@ -21,7 +21,7 @@ TOOL="${1:?tool name required}"
 ARGS="${2:-{\}}"
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$REPO/build/install/movebank-mcp/bin/movebank-mcp"
+BIN="$REPO/build/install/movebank-mirror-mcp/bin/movebank-mirror-mcp"
 
 if [[ ! -x "$BIN" ]]; then
     echo "ERROR: $BIN not found or not executable." >&2

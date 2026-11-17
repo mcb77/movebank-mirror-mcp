@@ -1,6 +1,6 @@
-package de.firetail.compat.movebank.mcp;
+package de.firetail.compat.movebank.mirror.mcp;
 
-import de.firetail.compat.movebank.mcp.tools.MovebankTools;
+import de.firetail.compat.movebank.mirror.mcp.tools.MovebankTools;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.boot.SpringApplication;
@@ -21,7 +21,7 @@ import java.util.Arrays;
  *   --stdio           — JSON-RPC over stdin/stdout. The Claude Code /
  *                       Claude Desktop / MCP Inspector subprocess
  *                       model. Same UX as the original v0.0.1.
- *                       MOVEBANK_MCP_STDIO=true env var has the
+ *                       MOVEBANK_MIRROR_MCP_STDIO=true env var has the
  *                       same effect.
  *
  * Transport selection works by activating Spring profile 'stdio'
@@ -45,7 +45,7 @@ public class McpServerApplication {
 
     private static boolean wantsStdio(String[] args) {
         if (Arrays.asList(args).contains("--stdio")) return true;
-        String env = System.getenv("MOVEBANK_MCP_STDIO");
+        String env = System.getenv("MOVEBANK_MIRROR_MCP_STDIO");
         return env != null && env.equalsIgnoreCase("true");
     }
 

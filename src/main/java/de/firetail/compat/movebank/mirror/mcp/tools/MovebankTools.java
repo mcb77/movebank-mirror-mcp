@@ -1,7 +1,7 @@
-package de.firetail.compat.movebank.mcp.tools;
+package de.firetail.compat.movebank.mirror.mcp.tools;
 
 import com.opencsv.CSVWriter;
-import de.firetail.compat.movebank.mcp.MirrorDirectory;
+import de.firetail.compat.movebank.mirror.mcp.MirrorDirectory;
 import de.firetail.compat.movebank.mirror.StudyJson;
 import de.firetail.compat.movebank.mirror.reader.Event;
 import de.firetail.compat.movebank.mirror.reader.EventColumns;
@@ -28,7 +28,7 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
- * The 8 LLM-callable tools exposed by movebank-mcp.
+ * The 8 LLM-callable tools exposed by movebank-mirror-mcp.
  *
  * Design principles:
  *

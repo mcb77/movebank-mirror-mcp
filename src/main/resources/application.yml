@@ -1,11 +1,11 @@
-# Default mode: HTTP / SSE on 127.0.0.1:8090. movebank-mcp runs as
+# Default mode: HTTP / SSE on 127.0.0.1:8090. movebank-mirror-mcp runs as
 # a long-lived daemon; multiple MCP clients can connect to the same
 # instance over Spring AI's SSE transport.
 #
 # To run as a stdio subprocess instead (the original Claude-Code-
 # launches-it model), activate the 'stdio' profile via either:
 #   - the --stdio CLI flag (handled in McpServerApplication.main)
-#   - MOVEBANK_MCP_STDIO=true env var (same)
+#   - MOVEBANK_MIRROR_MCP_STDIO=true env var (same)
 #   - --spring.profiles.active=stdio
 # See application-stdio.yml for the stdio-mode overrides.
 spring:
@@ -15,7 +15,7 @@ spring:
   ai:
     mcp:
       server:
-        name: movebank-mcp
+        name: movebank-mirror-mcp
         version: 0.0.1
         type: SYNC
         stdio: false

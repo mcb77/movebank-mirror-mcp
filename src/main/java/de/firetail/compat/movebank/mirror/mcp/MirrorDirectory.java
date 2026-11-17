@@ -1,4 +1,4 @@
-package de.firetail.compat.movebank.mcp;
+package de.firetail.compat.movebank.mirror.mcp;
 
 import de.firetail.compat.movebank.mirror.reader.MirrorReader;
 import org.springframework.beans.factory.annotation.Value;
