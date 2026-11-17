@@ -7,7 +7,7 @@ plugins {
 
 group = 'de.firetail.compat.movebank'
 version = '0.0.1'
-description = 'MCP server that exposes a movebank-mirror-api as LLM-callable tools.'
+description = 'MCP server that exposes a local Movebank mirror as LLM-callable tools.'
 
 base {
     archivesName = 'movebank-mcp'
@@ -43,11 +43,14 @@ dependencies {
     implementation 'org.springframework.ai:spring-ai-starter-mcp-server'
     implementation 'org.springframework.ai:spring-ai-starter-mcp-server-webmvc'
 
-    // For HTTP calls to a running movebank-mirror-api.
     implementation 'org.springframework.boot:spring-boot-starter'
-    implementation 'org.springframework:spring-web'
 
-    // OpenCSV for streaming CSV passthrough on download_events_to_file.
+    // Reads the mirror directory (de.firetail.compat.movebank.mirror.reader, new in
+    // movebank-mirror 0.0.4). Until 0.0.4 is on Maven Central, gradle.properties
+    // sets localMovebankMirror to build against ../movebank-mirror.
+    implementation 'de.firetail.compat.movebank:movebank-mirror:0.0.4'
+
+    // OpenCSV for writing download_events_to_file.
     implementation 'com.opencsv:opencsv:5.9'
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'

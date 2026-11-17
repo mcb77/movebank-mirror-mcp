@@ -1,1 +1,9 @@
 rootProject.name = 'movebank-mcp'
+
+if (hasProperty('localMovebankMirror')) {
+    includeBuild('../movebank-mirror') {
+        dependencySubstitution {
+            substitute module('de.firetail.compat.movebank:movebank-mirror') using project(':lib')
+        }
+    }
+}

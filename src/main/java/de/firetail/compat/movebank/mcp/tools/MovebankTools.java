@@ -1,17 +1,20 @@
 package de.firetail.compat.movebank.mcp.tools;
 
-import com.opencsv.CSVReader;
-import de.firetail.compat.movebank.mcp.MirrorApiClient;
+import com.opencsv.CSVWriter;
+import de.firetail.compat.movebank.mcp.MirrorDirectory;
+import de.firetail.compat.movebank.mirror.StudyJson;
+import de.firetail.compat.movebank.mirror.reader.Event;
+import de.firetail.compat.movebank.mirror.reader.EventColumns;
+import de.firetail.compat.movebank.mirror.reader.EventQuery;
+import de.firetail.compat.movebank.mirror.reader.EventVisitor;
+import de.firetail.compat.movebank.mirror.reader.MirrorReader;
+import de.firetail.compat.movebank.mirror.reader.MovebankEventCsv;
+import de.firetail.compat.movebank.mirror.reader.SensorType;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClientException;
 
-import java.io.BufferedReader;
 import java.io.BufferedWriter;
-import java.io.IOException;
-import java.io.Reader;
-import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -19,13 +22,13 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
- * The 8 LLM-callable tools exposed by movebank-mcp. v0.0.1 stubs:
- * each method returns a placeholder so the MCP client (Inspector,
- * Claude Code) can see the tool schemas. Real implementations follow.
+ * The 8 LLM-callable tools exposed by movebank-mcp.
  *
  * Design principles:
  *
@@ -36,15 +39,16 @@ import java.util.Map;
  *     Those live outside the MCP conversation; the LLM context is
  *     "exploring data that already exists in this mirror."
  *
- * v1 talks to a local movebank-mirror-api (default: http://localhost:8080).
- * Live-API fallback is a v0.2.0 concern.
+ * The tools read the mirror directory in-process through movebank-mirror's
+ * {@link MirrorReader}: the same reader movebank-mirror-api serves from, so
+ * events come in Movebank's order with Movebank's deployment assignment.
  */
 @Service
 public class MovebankTools {
 
-    private final MirrorApiClient mirror;
+    private final MirrorDirectory mirror;
 
-    public MovebankTools(MirrorApiClient mirror) {
+    public MovebankTools(MirrorDirectory mirror) {
         this.mirror = mirror;
     }
 
@@ -61,55 +65,35 @@ public class MovebankTools {
                                      "study name / taxon / PI. Omit to list all mirrored studies.")
             String filter
     ) {
-        String csv;
+        MirrorReader reader;
         try {
-            csv = mirror.directRead(Map.of(
-                    "entity_type", "study",
-                    "attributes",
-                    "id,name,taxon_ids,number_of_individuals," +
-                    "timestamp_first_deployed_location,timestamp_last_deployed_location," +
-                    "principal_investigator_name,sensor_type_ids"
-            ));
-        } catch (RestClientException e) {
-            return Map.of(
-                    "error", "Could not reach movebank-mirror-api at " + mirror.baseUrl() +
-                             " — is it running?",
-                    "details", e.getMessage()
-            );
+            reader = mirror.reader();
+        } catch (IllegalStateException e) {
+            return error(e);
         }
-
         List<Map<String, Object>> studies = new ArrayList<>();
         String f = (filter == null || filter.isBlank()) ? null : filter.toLowerCase();
-        try (CSVReader r = new CSVReader(new StringReader(csv))) {
-            String[] header = r.readNext();
-            if (header == null) return studies;
-            String[] row;
-            while ((row = r.readNext()) != null) {
-                String name = col(row, header, "name");
-                String taxon = col(row, header, "taxon_ids");
-                String pi = col(row, header, "principal_investigator_name");
-                if (f != null && !(name.toLowerCase().contains(f) ||
-                                   taxon.toLowerCase().contains(f) ||
-                                   pi.toLowerCase().contains(f))) {
-                    continue;
-                }
-                Map<String, Object> s = new LinkedHashMap<>();
-                s.put("id", parseLongSafe(col(row, header, "id")));
-                s.put("name", name);
-                s.put("taxon", taxon);
-                s.put("n_individuals", parseIntSafe(col(row, header, "number_of_individuals")));
-                s.put("deployment_year_range", yearRange(
-                        col(row, header, "timestamp_first_deployed_location"),
-                        col(row, header, "timestamp_last_deployed_location")));
-                s.put("sensor_types", col(row, header, "sensor_type_ids"));
-                s.put("pi", pi);
-                studies.add(s);
+        for (StudyJson sj : reader.studies()) {
+            Map<String, String> row = sj.study == null ? Map.of() : sj.study;
+            String name = col(row, "name");
+            String taxon = col(row, "taxon_ids");
+            String pi = col(row, "principal_investigator_name");
+            if (f != null && !(name.toLowerCase().contains(f) ||
+                               taxon.toLowerCase().contains(f) ||
+                               pi.toLowerCase().contains(f))) {
+                continue;
             }
-        } catch (Exception e) {
-            return Map.of(
-                    "error", "Could not parse mirror-api response as CSV",
-                    "details", e.getMessage()
-            );
+            Map<String, Object> s = new LinkedHashMap<>();
+            s.put("id", parseLongSafe(col(row, "id")));
+            s.put("name", name);
+            s.put("taxon", taxon);
+            s.put("n_individuals", parseIntSafe(col(row, "number_of_individuals")));
+            s.put("deployment_year_range", yearRange(
+                    col(row, "timestamp_first_deployed_location"),
+                    col(row, "timestamp_last_deployed_location")));
+            s.put("sensor_types", col(row, "sensor_type_ids"));
+            s.put("pi", pi);
+            studies.add(s);
         }
         return studies;
     }
@@ -123,55 +107,39 @@ public class MovebankTools {
             @ToolParam(description = "Numeric Movebank study id (e.g. 2911040).")
             long study_id
     ) {
-        String csv;
+        StudyJson sj;
         try {
-            csv = mirror.directRead(Map.of(
-                    "entity_type", "study",
-                    "id", String.valueOf(study_id)
-            ));
-        } catch (RestClientException e) {
-            return Map.of(
-                    "error", "Could not reach movebank-mirror-api at " + mirror.baseUrl() +
-                             " — is it running?",
-                    "details", e.getMessage()
-            );
-        }
-
-        try (CSVReader r = new CSVReader(new StringReader(csv))) {
-            String[] header = r.readNext();
-            String[] row = header == null ? null : r.readNext();
-            if (row == null) {
-                return Map.of("error", "study not found", "study_id", study_id);
-            }
-            Map<String, Object> s = new LinkedHashMap<>();
-            s.put("id", parseLongSafe(col(row, header, "id")));
-            s.put("name", col(row, header, "name"));
-            s.put("study_objective", col(row, header, "study_objective"));
-            s.put("taxon", col(row, header, "taxon_ids"));
-            s.put("sensor_types", col(row, header, "sensor_type_ids"));
-            s.put("n_individuals", parseIntSafe(col(row, header, "number_of_individuals")));
-            s.put("n_tags", parseIntSafe(col(row, header, "number_of_tags")));
-            s.put("n_deployments", parseIntSafe(col(row, header, "number_of_deployments")));
-            s.put("deployment_first", col(row, header, "timestamp_first_deployed_location"));
-            s.put("deployment_last", col(row, header, "timestamp_last_deployed_location"));
-            s.put("main_lat", parseDoubleSafe(col(row, header, "main_location_lat")));
-            s.put("main_long", parseDoubleSafe(col(row, header, "main_location_long")));
-            s.put("pi", col(row, header, "principal_investigator_name"));
-            s.put("contact", col(row, header, "contact_person_name"));
-            s.put("citation", col(row, header, "citation"));
-            s.put("license_type", col(row, header, "license_type"));
-            s.put("license_terms", col(row, header, "license_terms"));
-            s.put("acknowledgements", col(row, header, "acknowledgements"));
-            s.put("grants", col(row, header, "grants_used"));
-            s.put("study_type", col(row, header, "study_type"));
-            s.put("download_access", parseBoolSafe(col(row, header, "i_have_download_access")));
-            return s;
+            sj = mirror.reader().study(String.valueOf(study_id));
         } catch (Exception e) {
-            return Map.of(
-                    "error", "Could not parse mirror-api response as CSV",
-                    "details", e.getMessage()
-            );
+            return error(e);
         }
+        if (sj == null || sj.study == null) {
+            return Map.of("error", "study not found", "study_id", study_id);
+        }
+        Map<String, String> row = sj.study;
+        Map<String, Object> s = new LinkedHashMap<>();
+        s.put("id", parseLongSafe(col(row, "id")));
+        s.put("name", col(row, "name"));
+        s.put("study_objective", col(row, "study_objective"));
+        s.put("taxon", col(row, "taxon_ids"));
+        s.put("sensor_types", col(row, "sensor_type_ids"));
+        s.put("n_individuals", parseIntSafe(col(row, "number_of_individuals")));
+        s.put("n_tags", parseIntSafe(col(row, "number_of_tags")));
+        s.put("n_deployments", parseIntSafe(col(row, "number_of_deployments")));
+        s.put("deployment_first", col(row, "timestamp_first_deployed_location"));
+        s.put("deployment_last", col(row, "timestamp_last_deployed_location"));
+        s.put("main_lat", parseDoubleSafe(col(row, "main_location_lat")));
+        s.put("main_long", parseDoubleSafe(col(row, "main_location_long")));
+        s.put("pi", col(row, "principal_investigator_name"));
+        s.put("contact", col(row, "contact_person_name"));
+        s.put("citation", col(row, "citation"));
+        s.put("license_type", col(row, "license_type"));
+        s.put("license_terms", col(row, "license_terms"));
+        s.put("acknowledgements", col(row, "acknowledgements"));
+        s.put("grants", col(row, "grants_used"));
+        s.put("study_type", col(row, "study_type"));
+        s.put("download_access", parseBoolSafe(col(row, "i_have_download_access")));
+        return s;
     }
 
     @Tool(description = """
@@ -189,32 +157,18 @@ public class MovebankTools {
                                      "Singular forms are also accepted.")
             String type
     ) {
-        // Normalize plural → singular for mirror-api's entity_type, and
-        // pick a per-type projection (entity schemas range from 3 columns
-        // for sensor up to 86 for deployment — unprojected is too noisy).
+        // Per-type projection: entity schemas range from 3 columns for
+        // sensor up to 86 for deployment; unprojected is too noisy.
         String norm = type == null ? "" : type.trim().toLowerCase().replaceAll("s$", "");
-        String entityType;
         String attrs;
         switch (norm) {
-            case "individual" -> {
-                entityType = "individual";
-                attrs = "id,local_identifier,taxon_canonical_name,sex,nick_name," +
-                        "ring_id,number_of_deployments,number_of_events,sensor_type_ids";
-            }
-            case "tag" -> {
-                entityType = "tag";
-                attrs = "id,local_identifier,manufacturer_name,model,weight," +
-                        "number_of_deployments,number_of_events,sensor_type_ids";
-            }
-            case "deployment" -> {
-                entityType = "deployment";
-                attrs = "id,tag_id,individual_id,local_identifier," +
-                        "deploy_on_timestamp,deploy_off_timestamp,sensor_type_ids";
-            }
-            case "sensor" -> {
-                entityType = "sensor";
-                attrs = null;  // already minimal (id, tag_id, sensor_type_id)
-            }
+            case "individual" -> attrs = "id,local_identifier,taxon_canonical_name,sex,nick_name," +
+                                         "ring_id,number_of_deployments,number_of_events,sensor_type_ids";
+            case "tag" -> attrs = "id,local_identifier,manufacturer_name,model,weight," +
+                                  "number_of_deployments,number_of_events,sensor_type_ids";
+            case "deployment" -> attrs = "id,tag_id,individual_id,local_identifier," +
+                                         "deploy_on_timestamp,deploy_off_timestamp,sensor_type_ids";
+            case "sensor" -> attrs = null;  // already minimal (id, tag_id, sensor_type_id)
             default -> {
                 return Map.of(
                         "error", "unknown type '" + type + "'",
@@ -223,30 +177,20 @@ public class MovebankTools {
             }
         }
 
-        Map<String, String> params = new LinkedHashMap<>();
-        params.put("entity_type", entityType);
-        params.put("study_id", String.valueOf(study_id));
-        if (attrs != null) params.put("attributes", attrs);
-
-        String csv;
+        StudyJson sj;
         try {
-            csv = mirror.directRead(params);
-        } catch (RestClientException e) {
-            return Map.of(
-                    "error", "Could not reach movebank-mirror-api at " + mirror.baseUrl() +
-                             " — is it running?",
-                    "details", e.getMessage()
-            );
-        }
-
-        try {
-            return parseCsvAsListOfMaps(csv);
+            sj = mirror.reader().study(String.valueOf(study_id));
         } catch (Exception e) {
-            return Map.of(
-                    "error", "Could not parse mirror-api response as CSV",
-                    "details", e.getMessage()
-            );
+            return error(e);
         }
+        if (sj == null) return List.of();
+        List<Map<String, String>> rows = switch (norm) {
+            case "individual" -> sj.individuals;
+            case "tag" -> sj.tags;
+            case "deployment" -> sj.deployments;
+            default -> sj.sensors;
+        };
+        return project(rows, attrs);
     }
 
     @Tool(description = """
@@ -256,24 +200,17 @@ public class MovebankTools {
             endpoints require — e.g. summarize_events and query_events
             take a numeric sensor_type_id, not the human name.""")
     public Object list_sensor_types() {
-        String csv;
-        try {
-            csv = mirror.directRead(Map.of("entity_type", "tag_type"));
-        } catch (RestClientException e) {
-            return Map.of(
-                    "error", "Could not reach movebank-mirror-api at " + mirror.baseUrl() +
-                             " — is it running?",
-                    "details", e.getMessage()
-            );
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (SensorType t : SensorType.ALL) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("description", t.description());
+            m.put("external_id", t.externalId());
+            m.put("id", parseLongSafe(t.id()));
+            m.put("is_location_sensor", t.isLocationSensor());
+            m.put("name", t.name());
+            out.add(m);
         }
-        try {
-            return parseCsvAsListOfMaps(csv);
-        } catch (Exception e) {
-            return Map.of(
-                    "error", "Could not parse mirror-api response as CSV",
-                    "details", e.getMessage()
-            );
-        }
+        return out;
     }
 
     @Tool(description = """
@@ -316,6 +253,13 @@ public class MovebankTools {
 
     // ── Events (summary in context, files on request) ────────────────────
 
+    private static final String TIME_WINDOW_HELP =
+            "Time window 'from/to' in UTC, e.g. '2020-01-01/2020-12-31' or " +
+            "'2008-07-11T00:00/2008-07-12T12:00'; either side may be empty. " +
+            "'to' includes everything that starts with it, so '2020-12-31' " +
+            "includes that whole day. Write times as above (upper-case T, " +
+            "optional Z); offsets like +02:00 are not accepted. Omit for no time filter.";
+
     @Tool(description = """
             Summarize event data for a (study, optional tag, optional
             sensor type, optional time window): row count, column list,
@@ -324,9 +268,11 @@ public class MovebankTools {
             download_events_to_file — it tells you whether the result
             will be 100 rows or 100 million.
 
-            Streams the response in one pass; safe to call on large
-            studies. If you don't know the sensor_type_id, use
-            list_sensor_types first (GPS is 653, acceleration 2365683).""")
+            Streams the events in one pass; safe to call on large
+            studies. Rows come in Movebank's order: by sensor type,
+            then individual, then time. If you don't know the
+            sensor_type_id, use list_sensor_types first (GPS is 653,
+            acceleration 2365683).""")
     public Object summarize_events(
             @ToolParam(description = "Numeric Movebank study id.")
             long study_id,
@@ -335,122 +281,81 @@ public class MovebankTools {
             @ToolParam(required = false, description = "Restrict to one sensor type id (see list_sensor_types). " +
                                                        "Omit to summarize across all sensors in the study.")
             Long sensor_type_id,
-            @ToolParam(required = false, description = "ISO-8601 time window 'from/to', e.g. " +
-                                                       "'2020-01-01/2020-12-31'. Omit for no time filter.")
+            @ToolParam(required = false, description = TIME_WINDOW_HELP)
             String time_window
     ) {
-        Map<String, String> params = new LinkedHashMap<>();
-        params.put("entity_type", "event");
-        params.put("study_id", String.valueOf(study_id));
-        params.put("attributes", "all");
-        if (sensor_type_id != null) params.put("sensor_type_id", String.valueOf(sensor_type_id));
-        if (tag_id != null)         params.put("tag_id", String.valueOf(tag_id));
-        applyTimeWindow(params, time_window);
-
         try {
-            Map<String, Object> summary = mirror.directReadStreaming(params, this::summarizeStream);
-            // Echo what was queried so the LLM can re-cite the filters
-            // accurately in its response to the user.
-            Map<String, Object> filters = new LinkedHashMap<>();
-            filters.put("study_id", study_id);
-            filters.put("tag_id", tag_id);
-            filters.put("sensor_type_id", sensor_type_id);
-            filters.put("time_window", time_window);
+            EventSelection sel = select(study_id, tag_id, sensor_type_id, time_window);
             Map<String, Object> result = new LinkedHashMap<>();
-            result.put("filters", filters);
-            result.putAll(summary);
+            result.put("filters", filters(study_id, tag_id, sensor_type_id, time_window));
+            result.putAll(summarize(sel));
             return result;
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return error(e);
         } catch (Exception e) {
-            return Map.of(
-                    "error", "Could not summarize events from mirror-api at " + mirror.baseUrl(),
-                    "details", e.getMessage()
-            );
+            return Map.of("error", "Could not summarize events", "details", String.valueOf(e.getMessage()));
         }
     }
 
-    /** One streaming pass: count rows, track first/last timestamp,
-     *  min/max lat+long, capture head (first 5) and tail (last 5)
-     *  without retaining the rows in between. */
-    private Map<String, Object> summarizeStream(Reader csv) {
-        try (CSVReader r = new CSVReader(csv)) {
-            String[] header = r.readNext();
-            if (header == null) {
-                Map<String, Object> empty = new LinkedHashMap<>();
-                empty.put("row_count", 0L);
-                empty.put("columns", List.of());
-                empty.put("head", List.of());
-                empty.put("tail", List.of());
-                return empty;
+    /** One pass: count rows, track first/last timestamp, min/max lat+long, capture head
+     *  (first 5) and tail (last 5) without retaining the rows in between. */
+    private Map<String, Object> summarize(EventSelection sel) throws Exception {
+        String[] header = sel.out.columns().toArray(new String[0]);
+        int tsIdx   = indexOf(header, "timestamp");
+        int latIdx  = indexOf(header, "location_lat");
+        int longIdx = indexOf(header, "location_long");
+
+        long[] count = {0};
+        String[] firstLast = {null, null};
+        double[] box = {Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY,
+                        Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY};
+        boolean[] hasLat = {false}, hasLong = {false};
+        List<Map<String, Object>> head = new ArrayList<>(5);
+        Deque<String[]> tail = new ArrayDeque<>(6);
+
+        sel.read(row -> {
+            count[0]++;
+            String ts = tsIdx >= 0 ? row[tsIdx] : null;
+            if (ts != null && !ts.isEmpty()) {
+                if (firstLast[0] == null) firstLast[0] = ts;
+                firstLast[1] = ts;
             }
-            int tsIdx   = indexOf(header, "timestamp");
-            int latIdx  = indexOf(header, "location_lat");
-            int longIdx = indexOf(header, "location_long");
+            Double lat = latIdx  >= 0 ? parseDoubleSafe(row[latIdx])  : null;
+            Double lon = longIdx >= 0 ? parseDoubleSafe(row[longIdx]) : null;
+            if (lat != null) { hasLat[0] = true; box[0] = Math.min(box[0], lat); box[1] = Math.max(box[1], lat); }
+            if (lon != null) { hasLong[0] = true; box[2] = Math.min(box[2], lon); box[3] = Math.max(box[3], lon); }
+            if (head.size() < 5) head.add(rowToTypedMap(header, row));
+            tail.addLast(row);
+            if (tail.size() > 5) tail.pollFirst();
+        });
 
-            long count = 0;
-            String firstTs = null, lastTs = null;
-            Double minLat = null, maxLat = null, minLong = null, maxLong = null;
-            List<Map<String, Object>> head = new ArrayList<>(5);
-            Deque<Map<String, Object>> tail = new ArrayDeque<>(6);
-
-            String[] row;
-            while ((row = r.readNext()) != null) {
-                count++;
-                if (tsIdx >= 0 && tsIdx < row.length) {
-                    String ts = row[tsIdx];
-                    if (ts != null && !ts.isEmpty()) {
-                        if (firstTs == null) firstTs = ts;
-                        lastTs = ts;
-                    }
-                }
-                Double lat = (latIdx  >= 0 && latIdx  < row.length) ? parseDoubleSafe(row[latIdx])  : null;
-                Double lon = (longIdx >= 0 && longIdx < row.length) ? parseDoubleSafe(row[longIdx]) : null;
-                if (lat != null) { if (minLat  == null || lat < minLat)  minLat  = lat;
-                                   if (maxLat  == null || lat > maxLat)  maxLat  = lat; }
-                if (lon != null) { if (minLong == null || lon < minLong) minLong = lon;
-                                   if (maxLong == null || lon > maxLong) maxLong = lon; }
-
-                if (head.size() < 5) head.add(rowToTypedMap(header, row));
-                tail.addLast(rowToTypedMap(header, row));
-                if (tail.size() > 5) tail.pollFirst();
-            }
-
-            Map<String, Object> result = new LinkedHashMap<>();
-            result.put("row_count", count);
-            result.put("columns", List.of(header));
-            Map<String, Object> timeExtent = new LinkedHashMap<>();
-            timeExtent.put("first", firstTs);
-            timeExtent.put("last",  lastTs);
-            result.put("time_extent", timeExtent);
-            if (minLat != null && minLong != null) {
-                result.put("bbox", Map.of(
-                        "min_lat", minLat, "max_lat", maxLat,
-                        "min_long", minLong, "max_long", maxLong));
-            } else {
-                result.put("bbox", null);
-            }
-            result.put("head", head);
-            result.put("tail", new ArrayList<>(tail));
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("row_count", count[0]);
+        result.put("columns", sel.out.headerWritten() ? List.of(header) : List.of());
+        if (!sel.out.headerWritten()) {
+            result.put("head", List.of());
+            result.put("tail", List.of());
             return result;
-        } catch (Exception e) {
-            throw new RuntimeException("Could not parse event CSV stream", e);
         }
+        Map<String, Object> timeExtent = new LinkedHashMap<>();
+        timeExtent.put("first", firstLast[0]);
+        timeExtent.put("last",  firstLast[1]);
+        result.put("time_extent", timeExtent);
+        if (hasLat[0] && hasLong[0]) {
+            result.put("bbox", Map.of(
+                    "min_lat", box[0], "max_lat", box[1],
+                    "min_long", box[2], "max_long", box[3]));
+        } else {
+            result.put("bbox", null);
+        }
+        result.put("head", head);
+        List<Map<String, Object>> tailMaps = new ArrayList<>();
+        for (String[] r : tail) tailMaps.add(rowToTypedMap(header, r));
+        result.put("tail", tailMaps);
+        return result;
     }
 
-    /** Parse a "from/to" ISO-8601 window and stash as Movebank's
-     *  separate timestamp_start / timestamp_end query parameters.
-     *  Skips silently if the input doesn't have a slash. */
-    private static void applyTimeWindow(Map<String, String> params, String timeWindow) {
-        if (timeWindow == null || timeWindow.isBlank()) return;
-        String[] parts = timeWindow.split("/", 2);
-        if (parts.length == 2) {
-            String from = parts[0].trim();
-            String to   = parts[1].trim();
-            if (!from.isEmpty()) params.put("timestamp_start", from);
-            if (!to.isEmpty())   params.put("timestamp_end",   to);
-        }
-    }
-
-    /** Map a CSV row to a column→value map using {@link #typedValue}'s
+    /** Map a row to a column→value map using {@link #typedValue}'s
      *  coercion. Used by the events head/tail previews. */
     private static Map<String, Object> rowToTypedMap(String[] header, String[] row) {
         Map<String, Object> m = new LinkedHashMap<>();
@@ -483,7 +388,7 @@ public class MovebankTools {
 
             Multiple aggregations share a single pass over the data.
             Example: ["count", "bbox", "mean:ground_speed",
-            "max:ground_speed"] runs in one HTTP call.""")
+            "max:ground_speed"] reads the events once.""")
     public Object query_events(
             @ToolParam(description = "Numeric Movebank study id.")
             long study_id,
@@ -491,7 +396,7 @@ public class MovebankTools {
             Long tag_id,
             @ToolParam(required = false, description = "Restrict to one sensor type id (see list_sensor_types).")
             Long sensor_type_id,
-            @ToolParam(required = false, description = "ISO-8601 time window 'from/to'.")
+            @ToolParam(required = false, description = TIME_WINDOW_HELP)
             String time_window,
             @ToolParam(description = "Aggregations to compute in one pass. See the tool description for syntax.")
             List<String> aggregations
@@ -517,31 +422,16 @@ public class MovebankTools {
             specs.add(spec);
         }
 
-        Map<String, String> params = new LinkedHashMap<>();
-        params.put("entity_type", "event");
-        params.put("study_id", String.valueOf(study_id));
-        params.put("attributes", "all");
-        if (sensor_type_id != null) params.put("sensor_type_id", String.valueOf(sensor_type_id));
-        if (tag_id != null)         params.put("tag_id", String.valueOf(tag_id));
-        applyTimeWindow(params, time_window);
-
         try {
-            Map<String, Object> aggregates =
-                    mirror.directReadStreaming(params, csv -> aggregateStream(csv, specs));
-            Map<String, Object> filters = new LinkedHashMap<>();
-            filters.put("study_id", study_id);
-            filters.put("tag_id", tag_id);
-            filters.put("sensor_type_id", sensor_type_id);
-            filters.put("time_window", time_window);
+            EventSelection sel = select(study_id, tag_id, sensor_type_id, time_window);
             Map<String, Object> result = new LinkedHashMap<>();
-            result.put("filters", filters);
-            result.put("aggregations", aggregates);
+            result.put("filters", filters(study_id, tag_id, sensor_type_id, time_window));
+            result.put("aggregations", aggregate(sel, specs));
             return result;
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return error(e);
         } catch (Exception e) {
-            return Map.of(
-                    "error", "Could not query events from mirror-api",
-                    "details", e.getMessage()
-            );
+            return Map.of("error", "Could not query events", "details", String.valueOf(e.getMessage()));
         }
     }
 
@@ -566,103 +456,80 @@ public class MovebankTools {
         return new AggSpec(op, column, trimmed);
     }
 
-    /** One streaming pass over an event-data CSV that maintains
-     *  accumulators per requested aggregation and emits the final
-     *  values keyed by the original input strings. */
-    private Map<String, Object> aggregateStream(Reader csv, List<AggSpec> specs) {
-        try (CSVReader r = new CSVReader(csv)) {
-            String[] header = r.readNext();
-            if (header == null) {
-                // Empty response → all counts/aggregates are zero/null
-                Map<String, Object> empty = new LinkedHashMap<>();
-                for (AggSpec spec : specs) {
-                    empty.put(spec.key(), spec.op().equals("count") ? 0L : null);
-                }
-                return empty;
-            }
+    /** One pass over the events that maintains accumulators per requested
+     *  aggregation and emits the final values keyed by the original input strings. */
+    private Map<String, Object> aggregate(EventSelection sel, List<AggSpec> specs) throws Exception {
+        String[] header = sel.out.columns().toArray(new String[0]);
+        Map<String, Integer> colIdx = new LinkedHashMap<>();
+        for (int i = header.length - 1; i >= 0; i--) colIdx.put(header[i], i);
+        int latIdx  = colIdx.getOrDefault("location_lat",  -1);
+        int longIdx = colIdx.getOrDefault("location_long", -1);
 
-            // Column index lookups (one-time)
-            Map<String, Integer> colIdx = new LinkedHashMap<>();
-            for (int i = 0; i < header.length; i++) colIdx.put(header[i], i);
-            int latIdx  = colIdx.getOrDefault("location_lat",  -1);
-            int longIdx = colIdx.getOrDefault("location_long", -1);
-
-            // Accumulators
-            long count = 0;
-            // Per numeric column: [min, max, sum, n]. Shared across
-            // min/max/mean specs that target the same column.
-            Map<String, double[]> stats = new LinkedHashMap<>();
-            for (AggSpec spec : specs) {
-                if (spec.column() != null) {
-                    stats.computeIfAbsent(spec.column(), c -> new double[]{
-                            Double.POSITIVE_INFINITY,
-                            Double.NEGATIVE_INFINITY,
-                            0.0, 0.0
-                    });
-                }
+        long[] count = {0};
+        // Per numeric column: [min, max, sum, n]. Shared across
+        // min/max/mean specs that target the same column.
+        Map<String, double[]> stats = new LinkedHashMap<>();
+        for (AggSpec spec : specs) {
+            if (spec.column() != null) {
+                stats.computeIfAbsent(spec.column(), c -> new double[]{
+                        Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, 0.0, 0.0});
             }
-            double minLat = Double.POSITIVE_INFINITY, maxLat  = Double.NEGATIVE_INFINITY;
-            double minLong = Double.POSITIVE_INFINITY, maxLong = Double.NEGATIVE_INFINITY;
-            boolean hasGeo = false;
-
-            String[] row;
-            while ((row = r.readNext()) != null) {
-                count++;
-                for (Map.Entry<String, double[]> e : stats.entrySet()) {
-                    int idx = colIdx.getOrDefault(e.getKey(), -1);
-                    if (idx < 0 || idx >= row.length) continue;
-                    Double v = parseDoubleSafe(row[idx]);
-                    if (v == null) continue;
-                    double[] s = e.getValue();
-                    if (v < s[0]) s[0] = v;
-                    if (v > s[1]) s[1] = v;
-                    s[2] += v;
-                    s[3] += 1;
-                }
-                if (latIdx >= 0 && longIdx >= 0
-                        && latIdx < row.length && longIdx < row.length) {
-                    Double lat = parseDoubleSafe(row[latIdx]);
-                    Double lon = parseDoubleSafe(row[longIdx]);
-                    if (lat != null && lon != null) {
-                        hasGeo = true;
-                        if (lat < minLat)  minLat  = lat;
-                        if (lat > maxLat)  maxLat  = lat;
-                        if (lon < minLong) minLong = lon;
-                        if (lon > maxLong) maxLong = lon;
-                    }
-                }
-            }
-
-            // Finalize — emit keyed by the LLM's original input string
-            Map<String, Object> result = new LinkedHashMap<>();
-            for (AggSpec spec : specs) {
-                switch (spec.op()) {
-                    case "count" -> result.put(spec.key(), count);
-                    case "bbox" -> result.put(spec.key(), hasGeo ? Map.of(
-                            "min_lat", minLat, "max_lat", maxLat,
-                            "min_long", minLong, "max_long", maxLong) : null);
-                    case "min" -> {
-                        double[] s = stats.get(spec.column());
-                        result.put(spec.key(), s[3] > 0 ? s[0] : null);
-                    }
-                    case "max" -> {
-                        double[] s = stats.get(spec.column());
-                        result.put(spec.key(), s[3] > 0 ? s[1] : null);
-                    }
-                    case "mean" -> {
-                        double[] s = stats.get(spec.column());
-                        result.put(spec.key(), s[3] > 0 ? s[2] / s[3] : null);
-                    }
-                }
-            }
-            return result;
-        } catch (Exception e) {
-            throw new RuntimeException("Could not aggregate event CSV stream", e);
         }
+        double[] box = {Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY,
+                        Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY};
+        boolean[] hasGeo = {false};
+
+        sel.read(row -> {
+            count[0]++;
+            for (Map.Entry<String, double[]> e : stats.entrySet()) {
+                int idx = colIdx.getOrDefault(e.getKey(), -1);
+                if (idx < 0) continue;
+                Double v = parseDoubleSafe(row[idx]);
+                if (v == null) continue;
+                double[] s = e.getValue();
+                if (v < s[0]) s[0] = v;
+                if (v > s[1]) s[1] = v;
+                s[2] += v;
+                s[3] += 1;
+            }
+            if (latIdx >= 0 && longIdx >= 0) {
+                Double lat = parseDoubleSafe(row[latIdx]);
+                Double lon = parseDoubleSafe(row[longIdx]);
+                if (lat != null && lon != null) {
+                    hasGeo[0] = true;
+                    box[0] = Math.min(box[0], lat); box[1] = Math.max(box[1], lat);
+                    box[2] = Math.min(box[2], lon); box[3] = Math.max(box[3], lon);
+                }
+            }
+        });
+
+        // Finalize — emit keyed by the LLM's original input string
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (AggSpec spec : specs) {
+            switch (spec.op()) {
+                case "count" -> result.put(spec.key(), count[0]);
+                case "bbox" -> result.put(spec.key(), hasGeo[0] ? Map.of(
+                        "min_lat", box[0], "max_lat", box[1],
+                        "min_long", box[2], "max_long", box[3]) : null);
+                case "min" -> {
+                    double[] s = stats.get(spec.column());
+                    result.put(spec.key(), s[3] > 0 ? s[0] : null);
+                }
+                case "max" -> {
+                    double[] s = stats.get(spec.column());
+                    result.put(spec.key(), s[3] > 0 ? s[1] : null);
+                }
+                case "mean" -> {
+                    double[] s = stats.get(spec.column());
+                    result.put(spec.key(), s[3] > 0 ? s[2] / s[3] : null);
+                }
+            }
+        }
+        return result;
     }
 
     @Tool(description = """
-            Stream event data from the mirror to a CSV file on disk;
+            Write event data from the mirror to a CSV file on disk;
             return the path, row count, column list, and file size.
             The LLM never sees the raw rows — tell the user where the
             file is and let them analyze it with polars / pandas / R.
@@ -670,10 +537,10 @@ public class MovebankTools {
             ALWAYS call summarize_events first to learn how big the
             result will be — there's no row limit here.
 
-            Bytes are passed through unchanged from mirror-api so the
-            CSV is bit-faithful with what the live Movebank API would
-            return; downstream tools that depend on specific quoting
-            (notably R's read.csv with na.strings) behave identically.""")
+            The file is the CSV movebank-mirror-api would send for the
+            same request (Movebank's columns, order, empty missing
+            values and CRLF line ends), so code written for a Movebank
+            download reads it unchanged.""")
     public Object download_events_to_file(
             @ToolParam(description = "Numeric Movebank study id.")
             long study_id,
@@ -681,7 +548,7 @@ public class MovebankTools {
             Long tag_id,
             @ToolParam(required = false, description = "Restrict to one sensor type id (see list_sensor_types).")
             Long sensor_type_id,
-            @ToolParam(required = false, description = "ISO-8601 time window 'from/to'.")
+            @ToolParam(required = false, description = TIME_WINDOW_HELP)
             String time_window,
             @ToolParam(description = "Absolute output file path. Suggest something under /tmp/ " +
                                      "unless the user has asked for a specific location. Parent " +
@@ -693,95 +560,165 @@ public class MovebankTools {
             return Map.of("error", "path is required");
         }
         Path outPath = Path.of(path).toAbsolutePath();
-
-        Map<String, String> params = new LinkedHashMap<>();
-        params.put("entity_type", "event");
-        params.put("study_id", String.valueOf(study_id));
-        params.put("attributes", "all");
-        if (sensor_type_id != null) params.put("sensor_type_id", String.valueOf(sensor_type_id));
-        if (tag_id != null)         params.put("tag_id", String.valueOf(tag_id));
-        applyTimeWindow(params, time_window);
-
         try {
-            Map<String, Object> summary =
-                    mirror.directReadStreaming(params, csv -> streamCsvToFile(csv, outPath));
-            Map<String, Object> filters = new LinkedHashMap<>();
-            filters.put("study_id", study_id);
-            filters.put("tag_id", tag_id);
-            filters.put("sensor_type_id", sensor_type_id);
-            filters.put("time_window", time_window);
+            MirrorReader reader = mirror.reader();
+            requireStudy(reader, study_id);
+            EventQuery query = query(study_id, tag_id, sensor_type_id, time_window);
+            List<String> columns = MovebankEventCsv.defaultColumns(
+                    reader, query.studyId(), query.sensorTypeIds(), query.tagId());
+            Path parent = outPath.getParent();
+            if (parent != null) Files.createDirectories(parent);
+            long[] rows = {0};
+            MovebankEventCsv out;
+            try (BufferedWriter bw = Files.newBufferedWriter(outPath, StandardCharsets.UTF_8);
+                 CSVWriter csv = new CSVWriter(bw, CSVWriter.DEFAULT_SEPARATOR,
+                         CSVWriter.DEFAULT_QUOTE_CHARACTER, CSVWriter.DEFAULT_ESCAPE_CHARACTER, "\r\n")) {
+                out = new MovebankEventCsv(csv, columns);
+                MovebankEventCsv writer = out;
+                reader.readEvents(query, new EventVisitor() {
+                    @Override public void file(EventColumns c) {
+                        writer.file(c);
+                    }
+                    @Override public void event(Event e) throws Exception {
+                        writer.event(e);
+                        rows[0]++;
+                    }
+                });
+                out.checkError(); // CSVWriter swallows write errors; don't report a truncated file as done
+            }
             Map<String, Object> result = new LinkedHashMap<>();
-            result.put("filters", filters);
-            result.putAll(summary);
+            result.put("filters", filters(study_id, tag_id, sensor_type_id, time_window));
+            result.put("path", outPath.toString());
+            result.put("row_count", rows[0]);
+            result.put("columns", out.headerWritten() ? columns : List.of());
+            result.put("size_bytes", Files.size(outPath));
             return result;
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return error(e);
         } catch (Exception e) {
             return Map.of(
                     "error", "Could not download events to " + outPath,
-                    "details", e.getMessage()
+                    "details", String.valueOf(e.getMessage())
             );
         }
     }
 
-    /** Stream a CSV response line-by-line to a local file. Counts data
-     *  rows and parses the header for the column list, but does NOT
-     *  re-encode the CSV — the bytes (modulo newline normalization)
-     *  are passed through unchanged, preserving mirror-api's
-     *  applyQuotesToAll=false quoting that downstream R clients rely on. */
-    private Map<String, Object> streamCsvToFile(Reader csv, Path outPath) {
-        try {
-            Path parent = outPath.getParent();
-            if (parent != null) Files.createDirectories(parent);
+    // ── event selection ───────────────────────────────────────────────────
 
-            long rowCount = 0;
-            String[] columns = new String[0];
+    /** A query plus the Movebank column projection its rows are delivered in. */
+    private record EventSelection(MirrorReader reader, EventQuery query, MovebankEventCsv out) {
 
-            try (BufferedReader br = new BufferedReader(csv);
-                 BufferedWriter bw = Files.newBufferedWriter(outPath, StandardCharsets.UTF_8)) {
-
-                String headerLine = br.readLine();
-                if (headerLine != null) {
-                    bw.write(headerLine);
-                    bw.newLine();
-                    // Parse the header just to extract column names for the
-                    // response. CSVReader handles quoted commas correctly.
-                    try (CSVReader hr = new CSVReader(new StringReader(headerLine))) {
-                        String[] parsed = hr.readNext();
-                        if (parsed != null) columns = parsed;
-                    }
-                }
-
-                String line;
-                while ((line = br.readLine()) != null) {
-                    bw.write(line);
-                    bw.newLine();
-                    rowCount++;
-                }
-            }
-
-            long size = Files.size(outPath);
-            Map<String, Object> result = new LinkedHashMap<>();
-            result.put("path", outPath.toString());
-            result.put("row_count", rowCount);
-            result.put("columns", List.of(columns));
-            result.put("size_bytes", size);
-            return result;
-        } catch (Exception e) {
-            throw new RuntimeException("Could not write to " + outPath + ": " + e.getMessage(), e);
+        interface RowHandler {
+            void row(String[] row) throws Exception;
         }
+
+        /** Reads the events; each row is aligned with {@code out.columns()}. */
+        void read(RowHandler handler) throws Exception {
+            reader.readEvents(query, new EventVisitor() {
+                @Override public void file(EventColumns c) {
+                    out.file(c);
+                }
+                @Override public void event(Event e) throws Exception {
+                    handler.row(out.project(e));
+                }
+            });
+        }
+    }
+
+    private EventSelection select(long studyId, Long tagId, Long sensorTypeId, String timeWindow) throws Exception {
+        MirrorReader reader = mirror.reader();
+        requireStudy(reader, studyId);
+        EventQuery query = query(studyId, tagId, sensorTypeId, timeWindow);
+        List<String> columns = MovebankEventCsv.defaultColumns(
+                reader, query.studyId(), query.sensorTypeIds(), query.tagId());
+        return new EventSelection(reader, query, new MovebankEventCsv(null, columns));
+    }
+
+    /** An unknown study is an error, not "a study without events". */
+    private static void requireStudy(MirrorReader reader, long studyId) throws Exception {
+        if (reader.study(String.valueOf(studyId)) == null) {
+            throw new IllegalArgumentException("study " + studyId + " is not in the mirror");
+        }
+    }
+
+    private static EventQuery query(long studyId, Long tagId, Long sensorTypeId, String timeWindow) {
+        String[] window = parseTimeWindow(timeWindow);
+        return EventQuery.study(String.valueOf(studyId))
+                .sensorTypes(sensorTypeId == null ? List.of() : List.of(String.valueOf(sensorTypeId)))
+                .tag(tagId == null ? null : String.valueOf(tagId))
+                .between(window[0], window[1]);
+    }
+
+    private static final Pattern TIME = Pattern.compile(
+            "\\d{4}(-\\d{2}(-\\d{2}([ T]\\d{2}(:\\d{2}(:\\d{2}(\\.\\d{1,3})?)?)?)?)?)?");
+
+    /**
+     * Parses "from/to" (ISO-8601 or Movebank's {@code yyyy-MM-dd HH:mm:ss.SSS}, UTC, any
+     * prefix of it) into Movebank-format bounds {from, to}; null for an empty side.
+     */
+    static String[] parseTimeWindow(String timeWindow) {
+        if (timeWindow == null || timeWindow.isBlank()) return new String[]{null, null};
+        String[] parts = timeWindow.split("/", -1);
+        if (parts.length != 2) {
+            throw new IllegalArgumentException("time_window must be 'from/to', got '" + timeWindow + "'");
+        }
+        String[] out = new String[2];
+        for (int i = 0; i < 2; i++) {
+            String t = parts[i].trim();
+            if (t.endsWith("Z")) t = t.substring(0, t.length() - 1);
+            if (t.isEmpty()) continue;
+            if (!TIME.matcher(t).matches()) {
+                throw new IllegalArgumentException("time_window: can't read '" + parts[i].trim()
+                        + "'; use e.g. 2020-01-31 or 2020-01-31T12:00 (UTC)");
+            }
+            out[i] = t.replace('T', ' ');
+        }
+        return out;
+    }
+
+    private static Map<String, Object> filters(long studyId, Long tagId, Long sensorTypeId, String timeWindow) {
+        // Echo what was queried so the LLM can re-cite the filters accurately.
+        Map<String, Object> f = new LinkedHashMap<>();
+        f.put("study_id", studyId);
+        f.put("tag_id", tagId);
+        f.put("sensor_type_id", sensorTypeId);
+        f.put("time_window", timeWindow);
+        return f;
     }
 
     // ── helpers ───────────────────────────────────────────────────────────
 
-    /** Look up a column by header name, returning "" when the header
-     *  or value is missing. CSV from mirror-api always uses our
-     *  requested attribute order, but defensive lookup is cheap. */
-    private static String col(String[] row, String[] header, String name) {
-        for (int i = 0; i < header.length; i++) {
-            if (header[i].equals(name)) {
-                return i < row.length && row[i] != null ? row[i] : "";
-            }
+    private static Map<String, Object> error(Exception e) {
+        return Map.of("error", String.valueOf(e.getMessage()));
+    }
+
+    /** A metadata value, "" when missing. */
+    private static String col(Map<String, String> row, String name) {
+        String v = row.get(name);
+        return v == null ? "" : v;
+    }
+
+    /**
+     * Rows projected to the comma-separated {@code attrs} (missing columns empty), or to the
+     * union of their keys when {@code attrs} is null; values typed by {@link #typedValue}.
+     */
+    private static List<Map<String, Object>> project(List<Map<String, String>> rows, String attrs) {
+        if (rows == null || rows.isEmpty()) return List.of();
+        List<String> cols;
+        if (attrs != null) {
+            cols = List.of(attrs.split(","));
+        } else {
+            LinkedHashSet<String> keys = new LinkedHashSet<>();
+            for (Map<String, String> r : rows) keys.addAll(r.keySet());
+            cols = new ArrayList<>(keys);
         }
-        return "";
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Map<String, String> r : rows) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            for (String c : cols) m.put(c, typedValue(c, col(r, c)));
+            out.add(m);
+        }
+        return out;
     }
 
     private static Long parseLongSafe(String s) {
@@ -816,28 +753,6 @@ public class MovebankTools {
 
     private static String year(String ts) {
         return (ts != null && ts.length() >= 4) ? ts.substring(0, 4) : "";
-    }
-
-    /** Parse a mirror-api CSV response into rows of column→value maps.
-     *  Empty / missing values stay as empty strings; values get
-     *  coerced to numeric / boolean based on the column name
-     *  (see {@link #typedValue}). */
-    private static List<Map<String, Object>> parseCsvAsListOfMaps(String csv) throws Exception {
-        List<Map<String, Object>> rows = new ArrayList<>();
-        try (CSVReader r = new CSVReader(new StringReader(csv))) {
-            String[] header = r.readNext();
-            if (header == null) return rows;
-            String[] row;
-            while ((row = r.readNext()) != null) {
-                Map<String, Object> m = new LinkedHashMap<>();
-                for (int i = 0; i < header.length; i++) {
-                    String v = (i < row.length && row[i] != null) ? row[i] : "";
-                    m.put(header[i], typedValue(header[i], v));
-                }
-                rows.add(m);
-            }
-        }
-        return rows;
     }
 
     /** Coerce a raw CSV value to a sensible JSON type based on column

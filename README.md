@@ -1,18 +1,18 @@
 # movebank-mcp
 
 An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server
-that exposes a [`movebank-mirror-api`](https://github.com/mcb77/movebank-mirror-api)
-instance as LLM-callable tools. Plug it into Claude Code, Claude Desktop,
-or any other MCP-compatible client and ask natural-language questions
-about your local Movebank mirror.
+that exposes a local Movebank mirror, written by
+[`movebank-mirror`](https://github.com/mcb77/movebank-mirror), as
+LLM-callable tools. Plug it into Claude Code, Claude Desktop, or any other
+MCP-compatible client and ask natural-language questions about your
+mirrored studies.
 
-**Status:** v0.0.1 scaffold. The 8 tools are registered and visible to
-MCP clients; their implementations are stubs that return placeholder
-responses. Implementations land next.
+**Status:** v0.0.1, unreleased. The 8 tools work against a real mirror; there
+are no automated tests yet.
 
 ---
 
-## What you can do with it (when implementations are done)
+## What you can do with it
 
 A researcher with a local Movebank mirror plus Claude Code:
 
@@ -63,11 +63,7 @@ conversation.
                     │              OR long-lived daemon
                     │              on 127.0.0.1:8090 )
                     │
-                    │ HTTP
-                    ▼
-          movebank-mirror-api      (separate process on :8080)
-                    │
-                    │ on-disk read
+                    │ in-process: movebank-mirror's MirrorReader
                     ▼
             movebank-mirror/      (file/folder structure)
 ```
@@ -75,16 +71,19 @@ conversation.
 `movebank-mcp` is a Spring Boot app using
 [`spring-ai-starter-mcp-server`](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-server-boot-starter-docs.html)
 for the MCP plumbing (JSON-RPC framing, tool registration, schema
-emission). It talks to `movebank-mirror-api` over HTTP — same loose
-coupling as anything else that speaks the Movebank API.
+emission). It reads the mirror directory directly with the `reader`
+package of `movebank-mirror`, the same code
+[`movebank-mirror-api`](https://github.com/mcb77/movebank-mirror-api)
+serves its REST API from. So events come in Movebank's order with
+Movebank's deployment assignment, and `download_events_to_file` writes the
+same bytes the API would send. No server has to be running.
 
 ## Requirements
 
 - JDK 21
-- A running [`movebank-mirror-api`](https://github.com/mcb77/movebank-mirror-api)
-  pointed at a populated mirror directory (defaults to
-  `http://localhost:8080/movebank`; override with
-  `MOVEBANK_MIRROR_API_BASE_URL`)
+- A mirror directory written by `movebank-mirror`, given in the
+  `MOVEBANK_MIRROR_DIR` environment variable. Without it, every tool
+  answers with an error that says so.
 - An MCP client (Claude Code, Claude Desktop, or MCP Inspector for
   development testing)
 
@@ -100,6 +99,10 @@ coupling as anything else that speaks the Movebank API.
 The dist archive is produced by `./gradlew bootDistTar bootDistZip`
 under `build/distributions/`.
 
+The build needs movebank-mirror 0.0.4 (the `reader` package). Until that
+is on Maven Central, `gradle.properties` sets `localMovebankMirror=true`,
+which builds against a sibling `../movebank-mirror` checkout.
+
 ## Testing the server during development
 
 Two paths, increasing integration:
@@ -110,6 +113,7 @@ Each call is ~3 seconds.
 
 ```bash
 ./gradlew installDist
+export MOVEBANK_MIRROR_DIR=/var/lib/mvb
 ./scripts/mcp-call.sh list_studies
 ./scripts/mcp-call.sh list_studies '{"filter":"albatross"}'
 ./scripts/mcp-call.sh get_study   '{"study_id":2911040}'
@@ -144,7 +148,7 @@ shuts it down when you exit. Nothing to manage; nothing left running.
 Register with Claude Code:
 
 ```bash
-claude mcp add --scope user movebank-mcp -- /absolute/path/to/movebank-mcp/build/install/movebank-mcp/bin/movebank-mcp --stdio
+claude mcp add --scope user -e MOVEBANK_MIRROR_DIR=/var/lib/mvb movebank-mcp -- /absolute/path/to/movebank-mcp/build/install/movebank-mcp/bin/movebank-mcp --stdio
 ```
 
 Trade-off: a code change requires a Claude Code session restart for
@@ -160,7 +164,7 @@ single server restart instead of one per client session.
 This is what you get if you launch the binary with no flag:
 
 ```bash
-./build/install/movebank-mcp/bin/movebank-mcp
+MOVEBANK_MIRROR_DIR=/var/lib/mvb ./build/install/movebank-mcp/bin/movebank-mcp
 # listening on 127.0.0.1:8090, SSE endpoint at /sse
 ```
 
@@ -188,8 +192,8 @@ In either mode, the 8 tools appear in Claude's tool list as
 ## Pairs with the rest of the family
 
 - [`movebank-api-client`](https://github.com/mcb77/movebank-api-client) — Java client for the Movebank REST API
-- [`movebank-mirror`](https://github.com/mcb77/movebank-mirror) — sync studies to a local file/folder structure
-- [`movebank-mirror-api`](https://github.com/mcb77/movebank-mirror-api) — local replay server for the mirror (this MCP server's runtime dependency)
+- [`movebank-mirror`](https://github.com/mcb77/movebank-mirror) — sync studies to a local file/folder structure; its reader is this server's data access
+- [`movebank-mirror-api`](https://github.com/mcb77/movebank-mirror-api) — the same mirror as a Movebank-compatible REST API, for R and other clients
 - [`movebank-rocker`](https://github.com/mcb77/movebank-rocker) — pinned R environment for parallel R-based workflows
 
 ---

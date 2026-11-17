@@ -11,7 +11,7 @@
 #     ./scripts/mcp-call.sh get_study '{"study_id":2911040}'
 #
 # Requires the server to have been built via ./gradlew installDist and
-# a movebank-mirror-api to be running (default: http://localhost:8080).
+# MOVEBANK_MIRROR_DIR to point at a mirror directory.
 #
 # Prints the parsed tool result as JSON; non-zero exit on protocol error.
 

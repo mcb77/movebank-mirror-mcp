@@ -20,9 +20,9 @@ spring:
         type: SYNC
         stdio: false
         instructions: |
-          Tools for querying a Movebank mirror through movebank-mirror-api.
-          The mirror is a local cache of Movebank studies; the API server
-          re-serves it through the same REST shape as live Movebank.
+          Tools for querying a local Movebank mirror: a copy of Movebank
+          studies on this computer, written by movebank-mirror. Events come
+          in Movebank's order and with Movebank's deployment assignment.
           Use list_studies + get_study to discover what's available; use
           summarize_events before download_events_to_file to avoid pulling
           millions of rows into context.
@@ -34,8 +34,8 @@ server:
   port: 8090
   address: 127.0.0.1
 
-# Where the MCP server reaches movebank-mirror-api. Override with
-# MOVEBANK_MIRROR_API_BASE_URL env var.
+# The mirror directory written by movebank-mirror. Set it with the
+# MOVEBANK_MIRROR_DIR env var.
 movebank:
-  mirror-api:
-    base-url: http://localhost:8080/movebank
+  mirror:
+    dir: ${MOVEBANK_MIRROR_DIR:}
