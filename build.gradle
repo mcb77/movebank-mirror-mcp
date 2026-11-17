@@ -65,7 +65,7 @@ springBoot {
     mainClass = 'de.firetail.compat.movebank.mirror.mcp.McpServerApplication'
 }
 
-// Read by a future ManifestVersionProvider for --version. Applied to both
+// Read by McpServerApplication for --version. Applied to both
 // jar and bootJar (Spring Boot's bootJar doesn't inherit by default).
 tasks.withType(Jar).configureEach {
     manifest {

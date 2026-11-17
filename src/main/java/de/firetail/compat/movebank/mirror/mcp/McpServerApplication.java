@@ -8,6 +8,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
 
 import java.util.Arrays;
+import java.util.List;
 
 /**
  * Entry point for the Movebank MCP server.
@@ -35,7 +36,32 @@ import java.util.Arrays;
 @SpringBootApplication
 public class McpServerApplication {
 
+    static final String USAGE = """
+            Usage: movebank-mirror-mcp [--stdio] [--help] [--version]
+
+            MCP server over a local Movebank mirror (written by movebank-mirror).
+
+              (no option)  HTTP/SSE on 127.0.0.1:8090, endpoint /sse
+              --stdio      JSON-RPC over stdin/stdout, for Claude Code / Claude Desktop
+                           (same as MOVEBANK_MIRROR_MCP_STDIO=true)
+              --help       print this and exit
+              --version    print the version and exit
+
+            Environment:
+              MOVEBANK_MIRROR_DIR   the mirror directory (required)
+            """;
+
     public static void main(String[] args) {
+        List<String> a = Arrays.asList(args);
+        if (a.contains("--help") || a.contains("-h")) {
+            System.out.print(USAGE);
+            return;
+        }
+        if (a.contains("--version") || a.contains("-V")) {
+            String v = McpServerApplication.class.getPackage().getImplementationVersion();
+            System.out.println("movebank-mirror-mcp " + (v != null ? v : "(development build)"));
+            return;
+        }
         SpringApplication app = new SpringApplication(McpServerApplication.class);
         if (wantsStdio(args)) {
             app.setAdditionalProfiles("stdio");

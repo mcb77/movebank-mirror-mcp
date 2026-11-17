@@ -88,6 +88,20 @@ same bytes the API would send. No server has to be running.
 
 ---
 
+## Installing
+
+Download `movebank-mirror-mcp-boot-<version>.tar` (or `.zip`) from the
+[GitHub releases](https://github.com/mcb77/movebank-mirror-mcp/releases),
+unpack it, and run `bin/movebank-mirror-mcp` (needs Java 21):
+
+```bash
+tar -xf movebank-mirror-mcp-boot-0.0.1.tar
+./movebank-mirror-mcp-boot-0.0.1/bin/movebank-mirror-mcp --help
+```
+
+Register that `bin/movebank-mirror-mcp` with your MCP client as shown under
+[Run modes](#run-modes).
+
 ## Building
 
 ```bash
