@@ -45,9 +45,8 @@ dependencies {
 
     implementation 'org.springframework.boot:spring-boot-starter'
 
-    // Reads the mirror directory (de.firetail.compat.movebank.mirror.reader, new in
-    // movebank-mirror 0.0.4). Until 0.0.4 is on Maven Central, gradle.properties
-    // sets localMovebankMirror to build against ../movebank-mirror.
+    // Reads the mirror directory (de.firetail.compat.movebank.mirror.reader,
+    // new in movebank-mirror 0.0.4).
     implementation 'de.firetail.compat.movebank:movebank-mirror:0.0.4'
 
     // OpenCSV for writing download_events_to_file.

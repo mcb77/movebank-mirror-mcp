@@ -98,9 +98,9 @@ same bytes the API would send. No server has to be running.
 The dist archive is produced by `./gradlew bootDistTar bootDistZip`
 under `build/distributions/`.
 
-The build needs movebank-mirror 0.0.4 (the `reader` package). Until that
-is on Maven Central, `gradle.properties` sets `localMovebankMirror=true`,
-which builds against a sibling `../movebank-mirror` checkout.
+To build against a sibling `../movebank-mirror` checkout instead of the
+published library, pass `-PlocalMovebankMirror` (or uncomment it in
+`gradle.properties`).
 
 ## Testing the server during development
 
