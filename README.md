@@ -7,8 +7,7 @@ LLM-callable tools. Plug it into Claude Code, Claude Desktop, or any other
 MCP-compatible client and ask natural-language questions about your
 mirrored studies.
 
-**Status:** v0.0.1, unreleased. The 8 tools work against a real mirror; there
-are no automated tests yet.
+**Status:** v0.0.1, unreleased. The 8 tools work against a real mirror.
 
 ---
 
