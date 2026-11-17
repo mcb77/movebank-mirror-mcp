@@ -263,7 +263,8 @@ public class MovebankTools {
     @Tool(description = """
             Summarize event data for a (study, optional tag, optional
             sensor type, optional time window): row count, column list,
-            temporal extent, geographic bbox, plus first 5 and last 5
+            temporal extent (earliest and latest timestamp), geographic
+            bbox, plus first 5 and last 5
             rows as a preview. ALWAYS call this before
             download_events_to_file — it tells you whether the result
             will be 100 rows or 100 million.
@@ -316,9 +317,11 @@ public class MovebankTools {
         sel.read(row -> {
             count[0]++;
             String ts = tsIdx >= 0 ? row[tsIdx] : null;
+            // Rows come by individual, not by time: track earliest and latest. Movebank's
+            // fixed-width timestamps compare correctly as text.
             if (ts != null && !ts.isEmpty()) {
-                if (firstLast[0] == null) firstLast[0] = ts;
-                firstLast[1] = ts;
+                if (firstLast[0] == null || ts.compareTo(firstLast[0]) < 0) firstLast[0] = ts;
+                if (firstLast[1] == null || ts.compareTo(firstLast[1]) > 0) firstLast[1] = ts;
             }
             Double lat = latIdx  >= 0 ? parseDoubleSafe(row[latIdx])  : null;
             Double lon = longIdx >= 0 ? parseDoubleSafe(row[longIdx]) : null;

@@ -66,6 +66,24 @@ class MovebankToolsTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void timeExtentIsEarliestAndLatestNotFirstAndLastRow() throws Exception {
+        // a second individual whose events are earlier than the first one's; rows come by individual
+        StudyJson s = new ObjectMapper().readValue(MirrorLayout.studyFile(dir.toFile(), "42"), StudyJson.class);
+        s.deployments = List.of(s.deployments.get(0), Map.of("id", "302", "tag_id", "11", "individual_id", "8",
+                "deploy_on_timestamp", "", "deploy_off_timestamp", ""));
+        new ObjectMapper().writeValue(MirrorLayout.studyFile(dir.toFile(), "42"), s);
+        Path tag = MirrorLayout.studyDir(dir.toFile(), "42").toPath().resolve("11");
+        Files.createDirectories(tag);
+        Files.writeString(tag.resolve("653_20200101000000.csv"),
+                "timestamp,location_lat,location_long\n2019-06-01 00:00:00.000,5.0,15.0\n");
+        Map<String, Object> r = (Map<String, Object>) tools.summarize_events(42, null, null, null);
+        assertEquals(Map.of("first", "2019-06-01 00:00:00.000", "last", "2020-03-03 00:00:00.000"), r.get("time_extent"));
+        List<Map<String, Object>> tail = (List<Map<String, Object>>) r.get("tail");
+        assertEquals("2019-06-01 00:00:00.000", tail.get(tail.size() - 1).get("timestamp"), "rows stay in Movebank order");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void invertedTimeWindowIsAnError() {
         Map<String, Object> r = (Map<String, Object>) tools.summarize_events(42, null, null, "2021/2020");
         assertTrue(String.valueOf(r.get("error")).contains("starts after it ends"), r.toString());
